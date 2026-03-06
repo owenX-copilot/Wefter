@@ -60,14 +60,15 @@ export class ChunkManager {
     const existing = this.chunks.get(k);
     if (existing && existing.seed === seed) return existing;
 
-    // 生成新迷宫
+    // 生成新迷宫；若该区块已被解放（开过宝箱但尚未锚定），则不再生成碎片和宝箱
+    const wasLiberated = existing?.chestOpened ?? false;
     const grid = MazeGenerator.generate(seed);
-    const fragments = MazeGenerator.placeFragments(grid, seed, cx, cy);
+    const fragments = wasLiberated ? [] : MazeGenerator.placeFragments(grid, seed, cx, cy);
 
     const chunk: ChunkData = {
       cx, cy, grid, fragments,
-      chestUnlocked: false,
-      chestOpened: false,
+      chestUnlocked: wasLiberated,
+      chestOpened: wasLiberated,
       state: 'uncharted',
       seed,
     };
@@ -96,12 +97,12 @@ export class ChunkManager {
   }
 
   private onSeedChange(quadrantId: string): void {
-    // 清除该象限所有未锚定的区块缓存
-    for (const [k, chunk] of this.chunks) {
+    // 标记该象限所有未锚定区块为「需要重新生成」，但保留解放状态（chestOpened）
+    for (const chunk of this.chunks.values()) {
       if (chunk.state === 'anchored') continue;
       const qid = this.seedProvider.getQuadrantForChunk(chunk.cx, chunk.cy);
       if (qid === quadrantId) {
-        this.chunks.delete(k);
+        chunk.seed = -1; // 失效标记，下次 getChunk 时会重新生成迷宫
       }
     }
   }
