@@ -221,6 +221,26 @@ export class BootScene extends Phaser.Scene {
       g.lineStyle(1, 0xff88ff, 0.8);
       g.strokeCircle(5, 5, 4);
     });
+
+    // 商店地板 — 暖黄石板
+    this.tex('shopFloor', S, (g) => {
+      g.fillStyle(0x5a4a20, 1);
+      g.fillRect(0, 0, S, S);
+      g.lineStyle(1, 0x7a6a3a, 0.7);
+      g.strokeRect(1, 1, S - 2, S - 2);
+    });
+
+    // 商人 NPC — 橙色圆形+$符号
+    this.tex('merchant', S, (g) => {
+      g.fillStyle(0xcc8800, 1);
+      g.fillCircle(half, half, S / 3);
+      g.lineStyle(2, 0xffcc44, 1);
+      g.strokeCircle(half, half, S / 3);
+      g.fillStyle(0xffffff, 1);
+      g.fillRect(half - 1, half - S / 4, 2, S / 2);
+      g.fillRect(half - S / 5, half - S / 4, S / 2.5, 2);
+      g.fillRect(half - S / 5, half, S / 2.5, 2);
+    });
   }
 
   /** 快捷生成纹理 */

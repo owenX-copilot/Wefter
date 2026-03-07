@@ -1,7 +1,7 @@
 import { SeedProvider } from './SeedProvider';
 import { MazeGenerator } from './MazeGenerator';
 import { SaveManager } from './SaveManager';
-import { CHUNK_TILES, MID, TileType, ChunkType } from '../constants';
+import { CHUNK_TILES, MID, TileType, ChunkType, ITEM_POOL, SHOP_OFFER_COUNT } from '../constants';
 import type { ChunkData, AnchoredChunkData } from '../types';
 
 export class ChunkManager {
@@ -61,6 +61,9 @@ export class ChunkManager {
           enemies: [],
           chestUnlocked: true,
           chestOpened: true,
+          shopPurchased: false,
+          shopOffers: [],
+          shopRefreshAt: 0,
           state: 'anchored',
           seed: 0,
         });
@@ -72,14 +75,21 @@ export class ChunkManager {
     if (this.anchoredData[k]) {
       if (!this.chunks.has(k)) {
         const storedType = (this.anchoredData[k].type as ChunkType) || ChunkType.Wild;
+        // 锚定商店用全开放无迷宫地板；其他类型用存档的 grid
+        const anchoredGrid = storedType === ChunkType.Shop
+          ? MazeGenerator.generateShopFloor()
+          : this.anchoredData[k].grid;
         this.chunks.set(k, {
           cx, cy,
           chunkType: storedType,
-          grid: this.anchoredData[k].grid,
+          grid: anchoredGrid,
           fragments: [],
           enemies: [],
           chestUnlocked: true,
           chestOpened: true,
+          shopPurchased: this.anchoredData[k].shopPurchased ?? false,
+          shopOffers: (this.anchoredData[k].shopOffers as import('../constants').ItemId[] | undefined) ?? [],
+          shopRefreshAt: this.anchoredData[k].shopRefreshAt ?? 0,
           state: 'anchored',
           seed: 0,
         });
@@ -101,10 +111,16 @@ export class ChunkManager {
     const fragments = (wasLiberated || !isWild) ? [] : MazeGenerator.placeFragments(grid, seed, cx, cy);
     const enemies   = (wasLiberated || !isEnemy) ? [] : MazeGenerator.placeEnemies(grid, seed, cx, cy);
 
+    const isShop  = chunkType === ChunkType.Shop;
+    const shopOffers = isShop ? this.rollShopOffers(seed) : [];
+
     const chunk: ChunkData = {
       cx, cy, grid, fragments, enemies, chunkType,
       chestUnlocked: wasLiberated,
       chestOpened: wasLiberated,
+      shopPurchased: wasLiberated && isShop,
+      shopOffers,
+      shopRefreshAt: 0,
       state: 'uncharted',
       seed,
     };
@@ -128,6 +144,7 @@ export class ChunkManager {
   anchorChunk(cx: number, cy: number, grid: number[][]): boolean {
     const k = this.key(cx, cy);
     const existingType = this.chunks.get(k)?.chunkType ?? ChunkType.Wild;
+    const existingSeed = this.chunks.get(k)?.seed ?? 0;
     this.anchoredData[k] = { grid, type: existingType, anchoredAt: Date.now() };
     SaveManager.saveAnchored(this.anchoredData);
 
@@ -139,6 +156,9 @@ export class ChunkManager {
       enemies: [],
       chestUnlocked: true,
       chestOpened: true,
+      shopPurchased: false,
+      shopOffers: existingType === ChunkType.Shop ? this.rollShopOffers(existingSeed) : [],
+      shopRefreshAt: 0,
       state: 'anchored',
       seed: 0,
     });
@@ -171,5 +191,29 @@ export class ChunkManager {
     if (ty < 0 || ty >= CHUNK_TILES || tx < 0 || tx >= CHUNK_TILES) return false;
     const t = grid[ty][tx];
     return t === TileType.Floor || t === TileType.Exit;
+  }
+
+  /** 用 seed 派生 SHOP_OFFER_COUNT 件不重复商品 */
+  rollShopOffers(seed: number): (typeof ITEM_POOL[number])[] {
+    const pool = [...ITEM_POOL];
+    const offers: (typeof ITEM_POOL[number])[] = [];
+    let s = (seed >>> 0) || 1;
+    for (let i = 0; i < SHOP_OFFER_COUNT && pool.length > 0; i++) {
+      s = Math.imul(s + 0x9e3779b9, 0x6c62272e) >>> 0;
+      const idx = s % pool.length;
+      offers.push(pool.splice(idx, 1)[0]);
+    }
+    return offers;
+  }
+
+  /** 持久化锚定商店的冷却状态（防刷新绕过） */
+  saveShopState(cx: number, cy: number, shopPurchased: boolean, shopRefreshAt: number, shopOffers?: import('../constants').ItemId[]): void {
+    const k = this.key(cx, cy);
+    if (this.anchoredData[k]) {
+      this.anchoredData[k].shopPurchased = shopPurchased;
+      this.anchoredData[k].shopRefreshAt = shopRefreshAt;
+      if (shopOffers !== undefined) this.anchoredData[k].shopOffers = shopOffers;
+      SaveManager.saveAnchored(this.anchoredData);
+    }
   }
 }

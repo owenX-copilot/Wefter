@@ -6,8 +6,11 @@ import {
   PLAYER_MAX_HP, HEAL_BANK_MAX, HEAL_BANK_REGEN_MS,
   SCOUT_DETECT_RADIUS, CHASER_DETECT_STEPS,
   SNIPER_DETECT_STEPS, PLAYER_FIRE_RANGE, SNIPER_FIRE_RATE,
+  COIN_FRAGMENT, COIN_WILD_CHEST, COIN_ENEMY_KILL, COIN_ENEMY_CHEST,
+  ITEM_DEFS, ITEM_POOL, SHOP_REFRESH_MS, SHOP_OFFER_COUNT,
 } from '../constants';
-import type { ChunkData, MapKey, SaveData, EnemyData } from '../types';
+import type { ItemId } from '../constants';
+import type { ChunkData, MapKey, SaveData, EnemyData, InventoryItem } from '../types';
 import { SeedProvider } from '../systems/SeedProvider';
 import { ChunkManager } from '../systems/ChunkManager';
 import { SaveManager } from '../systems/SaveManager';
@@ -41,7 +44,15 @@ export class GameScene extends Phaser.Scene {
   // Player combat
   private playerHp = PLAYER_MAX_HP;
   private healBank = HEAL_BANK_MAX;
+  private playerCoins = 0;
   private playerInvincible = false;
+  private inventory: InventoryItem[] = [];
+  private playerDamageBonus = 0;
+  private playerMaxHpBonus = 0;
+  private scoutRadiusReduction = 0;
+  private shieldActive = false;
+  private speedRuneActive = false;
+  private smokeStepsLeft = 0;
 
   // Movement
   private isMoving = false;
@@ -57,6 +68,8 @@ export class GameScene extends Phaser.Scene {
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private wasd!: Record<string, Phaser.Input.Keyboard.Key>;
   private keyE!: Phaser.Input.Keyboard.Key;
+  private keyF!: Phaser.Input.Keyboard.Key;
+  private keyB!: Phaser.Input.Keyboard.Key;
   private keyM!: Phaser.Input.Keyboard.Key;
   private keyTab!: Phaser.Input.Keyboard.Key;
 
@@ -70,6 +83,10 @@ export class GameScene extends Phaser.Scene {
   // Message
   private msgText: Phaser.GameObjects.Text | null = null;
   private msgBg: Phaser.GameObjects.Graphics | null = null;
+
+  // UI overlay (shop / bag)
+  private overlayOpen = false;
+  private overlayContainer: Phaser.GameObjects.Container | null = null;
 
   constructor() {
     super({ key: 'GameScene' });
@@ -94,6 +111,24 @@ export class GameScene extends Phaser.Scene {
       this.playerKeys   = save.keys || [];
       this.playerHp     = save.hp   ?? PLAYER_MAX_HP;
       this.healBank     = save.healBank ?? HEAL_BANK_MAX;
+      this.playerCoins  = save.coins ?? 0;
+      this.inventory    = save.inventory ?? [];
+      this.playerDamageBonus    = save.playerDamageBonus ?? 0;
+      this.playerMaxHpBonus     = save.playerMaxHpBonus ?? 0;
+      this.scoutRadiusReduction = save.scoutRadiusReduction ?? 0;
+
+      // 迁移：旧存档可能把永久升级误放进背包，读档时消化掉
+      const permanents: ItemId[] = ['firepower_up', 'max_hp_up', 'scout_jammer'];
+      this.inventory = this.inventory.filter(item => {
+        if (!permanents.includes(item.id)) return true;
+        // 将每个道具的效果叠加
+        for (let i = 0; i < item.qty; i++) {
+          if (item.id === 'firepower_up')  this.playerDamageBonus++;
+          if (item.id === 'max_hp_up')     { this.playerMaxHpBonus += 5; this.playerHp += 5; }
+          if (item.id === 'scout_jammer')  this.scoutRadiusReduction++;
+        }
+        return false; // 从背包移除
+      });
     }
 
     // ---- 渲染层（gameLayer 用 offset 保证居中）----
@@ -117,6 +152,8 @@ export class GameScene extends Phaser.Scene {
       D: kb.addKey(Phaser.Input.Keyboard.KeyCodes.D),
     };
     this.keyE = kb.addKey(Phaser.Input.Keyboard.KeyCodes.E);
+    this.keyF = kb.addKey(Phaser.Input.Keyboard.KeyCodes.F);
+    this.keyB = kb.addKey(Phaser.Input.Keyboard.KeyCodes.B);
     this.keyM = kb.addKey(Phaser.Input.Keyboard.KeyCodes.M);
     this.keyTab = kb.addKey(Phaser.Input.Keyboard.KeyCodes.TAB);
 
@@ -195,6 +232,7 @@ export class GameScene extends Phaser.Scene {
         this.checkFragmentPickup();
         this.checkChestInteraction();
         this.checkEnemyChestInteraction();
+        this.checkShopNpcStep();
         this.processTurn();
         this.checkExit();
       } else {
@@ -214,6 +252,8 @@ export class GameScene extends Phaser.Scene {
     const { x: mx, y: my } = this.moveDir;
     if (mx === 0 && my === 0) {
       if (Phaser.Input.Keyboard.JustDown(this.keyE))   this.tryAnchor();
+      if (Phaser.Input.Keyboard.JustDown(this.keyF))   this.tryOpenShop();
+      if (Phaser.Input.Keyboard.JustDown(this.keyB))   this.openBagUI();
       if (Phaser.Input.Keyboard.JustDown(this.keyM))   this.openMap();
       if (Phaser.Input.Keyboard.JustDown(this.keyTab)) this.showStatus();
       return;
@@ -231,7 +271,7 @@ export class GameScene extends Phaser.Scene {
     // 目标格有存活敌人 → 近战攻击（不位移）
     const enemyHere = this.getEnemyAt(nx, ny);
     if (enemyHere) {
-      this.moveCooldown = GameScene.MOVE_STEP_MS;
+      this.moveCooldown = this.speedRuneActive ? GameScene.MOVE_STEP_MS * 0.5 : GameScene.MOVE_STEP_MS;
       this.dealDamageToEnemy(enemyHere, 1);
       this.showFloatingText('⚔', nx * TILE_SIZE + TILE_SIZE / 2, (ny - 1) * TILE_SIZE);
       this.processTurn();
@@ -240,7 +280,7 @@ export class GameScene extends Phaser.Scene {
 
     this.isMoving = true;
     this.moveTarget = { x: nx, y: ny };
-    this.moveCooldown = GameScene.MOVE_STEP_MS;
+    this.moveCooldown = this.speedRuneActive ? GameScene.MOVE_STEP_MS * 0.5 : GameScene.MOVE_STEP_MS;
   }
 
   /* ================================================================
@@ -263,7 +303,8 @@ export class GameScene extends Phaser.Scene {
 
   private tryHomeHeal(): void {
     if (!this.chunkManager.isHome(this.playerChunkX, this.playerChunkY)) return;
-    const missing = PLAYER_MAX_HP - this.playerHp;
+    const maxHp = PLAYER_MAX_HP + this.playerMaxHpBonus;
+    const missing = maxHp - this.playerHp;
     if (missing <= 0) {
       this.showMessage('🏠 家园——生命已满', 1500);
       return;
@@ -275,7 +316,7 @@ export class GameScene extends Phaser.Scene {
     const actual = Math.min(missing, this.healBank);
     this.playerHp  += actual;
     this.healBank  -= actual;
-    this.showMessage(`🏠 家园——回血 +${actual}，生命恢复至 ${this.playerHp}/${PLAYER_MAX_HP}\n回血储量: ${this.healBank}/${HEAL_BANK_MAX}`, 2000);
+    this.showMessage(`🏠 家园——回血 +${actual}，生命恢复至 ${this.playerHp}/${maxHp}\n回血储量: ${this.healBank}/${HEAL_BANK_MAX}`, 2000);
   }
 
   private clearRendered(): void {
@@ -286,6 +327,7 @@ export class GameScene extends Phaser.Scene {
       this.chestSprite.destroy();
       this.chestSprite = null;
     }
+    this.closeOverlay();
     // 清除敌人层
     for (const sprite of this.enemySprites.values()) {
       this.tweens.killTweensOf(sprite);
@@ -318,14 +360,16 @@ export class GameScene extends Phaser.Scene {
             }).setOrigin(0.5),
           );
         } else {
-          // 地板——优先级：家园 > 已锚定 > 中心房间(未锚定) > 普通
+          // 地板——优先级：家园 > 已锚定商店 > 已锚定 > 中心房间(未锚定) > 普通
           const inCenter = Math.abs(x - MID) <= 1 && Math.abs(y - MID) <= 1;
+          const isAnchoredShop = isAnchored && chunk.chunkType === ChunkType.Shop;
           let key = 'floor';
           if (isHome) {
             const onDiamond = Math.abs(x - MID) + Math.abs(y - MID) <= 4;
             const onCross = (x === MID || y === MID);
             key = (onDiamond || onCross) ? 'pathFloor' : 'homeFloor';
-          } else if (isAnchored) key = 'anchoredFloor';
+          } else if (isAnchoredShop) key = 'shopFloor';
+          else if (isAnchored) key = 'anchoredFloor';
           else if (inCenter) key = 'centerFloor';
           this.mapLayer.add(this.add.sprite(px, py, key).setOrigin(0));
         }
@@ -335,6 +379,7 @@ export class GameScene extends Phaser.Scene {
     // 区块边框
     const border = this.add.graphics();
     if (isHome) border.lineStyle(2, Colors.HOME, 0.7);
+    else if (isAnchored && chunk.chunkType === ChunkType.Shop) border.lineStyle(2, 0xffcc44, 0.8);
     else if (isAnchored) border.lineStyle(2, Colors.ANCHORED, 0.6);
     else border.lineStyle(1, 0x1a1a38, 0.4);
     border.strokeRect(0, 0, CHUNK_PX, CHUNK_PX);
@@ -368,11 +413,42 @@ export class GameScene extends Phaser.Scene {
       this.chestSprite.destroy();
       this.chestSprite = null;
     }
-    if (chunk.state === 'anchored') return;
+    if (chunk.state === 'anchored') {
+      // 锚定商店：显示商人 NPC
+      if (chunk.chunkType === ChunkType.Shop) {
+        const px = MID * TILE_SIZE + TILE_SIZE / 2;
+        const py = MID * TILE_SIZE + TILE_SIZE / 2;
+        this.chestSprite = this.add.sprite(px, py, 'merchant').setDepth(5);
+        this.tweens.add({
+          targets: this.chestSprite,
+          y: { from: py - 2, to: py + 2 },
+          duration: 800, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+        });
+        this.fragmentLayer.add(this.chestSprite);
+      }
+      return;
+    }
     if (this.chunkManager.isHome(chunk.cx, chunk.cy)) return;
 
     const isWild  = chunk.chunkType === ChunkType.Wild;
     const isEnemy = chunk.chunkType === ChunkType.Enemy;
+    const isShop  = chunk.chunkType === ChunkType.Shop;
+
+    // 商店区块：显示商人（未购买）
+    if (isShop) {
+      if (chunk.shopPurchased) return;
+      const px = MID * TILE_SIZE + TILE_SIZE / 2;
+      const py = MID * TILE_SIZE + TILE_SIZE / 2;
+      this.chestSprite = this.add.sprite(px, py, 'merchant').setDepth(5);
+      this.tweens.add({
+        targets: this.chestSprite,
+        y: { from: py - 2, to: py + 2 },
+        duration: 800, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+      });
+      this.fragmentLayer.add(this.chestSprite);
+      return;
+    }
+
     if (!isWild && !isEnemy) return;
     // 敌营区块必须先清场才出现宝箱
     if (isEnemy && !chunk.chestUnlocked) return;
@@ -419,6 +495,7 @@ export class GameScene extends Phaser.Scene {
       if (frag.x !== this.playerTileX || frag.y !== this.playerTileY) continue;
 
       frag.collected = true;
+      this.gainCoins(COIN_FRAGMENT);
 
       // 动画
       const sprite = this.fragmentSprites.get(frag.id);
@@ -474,6 +551,7 @@ export class GameScene extends Phaser.Scene {
 
     // 打开宝箱
     chunk.chestOpened = true;
+    this.gainCoins(COIN_WILD_CHEST);
     this.chunkManager.liberateChunk(chunk.cx, chunk.cy);
 
     // 保存当前地图快照为钥匙（快照只含迷宫结构，不含任何关卡内容）
@@ -641,6 +719,11 @@ export class GameScene extends Phaser.Scene {
 
   private damagePlayer(amount: number): void {
     if (this.playerInvincible) return;
+    if (this.shieldActive) {
+      this.shieldActive = false;
+      this.showFloatingText('🛡 护盾!', this.playerTileX * TILE_SIZE + TILE_SIZE / 2, (this.playerTileY - 1) * TILE_SIZE);
+      return;
+    }
     this.playerHp = Math.max(0, this.playerHp - amount);
     this.cameras.main.flash(180, 220, 20, 20);
     this.playerInvincible = true;
@@ -652,8 +735,12 @@ export class GameScene extends Phaser.Scene {
   private onPlayerDeath(): void {
     this.showMessage('💀 你倒下了...\n传送回家园', 2000);
     this.moveDir.x = 0; this.moveDir.y = 0;
+    // 重置临时增益（死亡不影响背包/永久道具）
+    this.speedRuneActive = false;
+    this.shieldActive = false;
+    this.smokeStepsLeft = 0;
     this.time.delayedCall(1600, () => {
-      this.playerHp = PLAYER_MAX_HP;
+      this.playerHp = PLAYER_MAX_HP + this.playerMaxHpBonus;
       this.playerInvincible = false;
       this.playerTileX = MID;
       this.playerTileY = MID;
@@ -732,7 +819,7 @@ export class GameScene extends Phaser.Scene {
       (Math.abs(b.x - this.playerTileX) + Math.abs(b.y - this.playerTileY)) ? a : b,
     );
     this.firePlayerBullet(this.playerTileX, this.playerTileY, target.x, target.y);
-    this.dealDamageToEnemy(target, 1);
+    this.dealDamageToEnemy(target, 1 + this.playerDamageBonus);
   }
 
   // ---- 回合处理 ----
@@ -784,6 +871,7 @@ export class GameScene extends Phaser.Scene {
 
   private processChaser(e: EnemyData, grid: number[][]): void {
     if (!e.activated) {
+      if (this.smokeStepsLeft > 0) return;
       const r = this.bfs(grid, e.x, e.y, this.playerTileX, this.playerTileY);
       if (r && r.dist <= CHASER_DETECT_STEPS) e.activated = true;
       if (!e.activated) return;
@@ -803,6 +891,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   private processSniper(e: EnemyData, grid: number[][], anyBroadcast: boolean): void {
+    // 烟雾弹生效时巡逻不广播，狙击者也不需激活
+    if (this.smokeStepsLeft > 0) return;
     // 广播时无视激活条件直接计时
     if (!anyBroadcast && !e.activated) {
       const r = this.bfs(grid, e.x, e.y, this.playerTileX, this.playerTileY);
@@ -836,6 +926,7 @@ export class GameScene extends Phaser.Scene {
     if (this.playerTileX !== MID || this.playerTileY !== MID) return;
 
     chunk.chestOpened = true;
+    this.gainCoins(COIN_ENEMY_CHEST);
     this.chunkManager.liberateChunk(chunk.cx, chunk.cy);
     const gridSnapshot = chunk.grid.map(row => [...row]);
     const label = `从 (${chunk.cx}, ${chunk.cy}) 获得`;
@@ -852,6 +943,339 @@ export class GameScene extends Phaser.Scene {
       4000,
     );
     this.updateHUD();
+  }
+
+  /* ==============================================================
+   * SHOP
+   * ============================================================== */
+
+  /** 走到商人格子时提示 */
+  private checkShopNpcStep(): void {
+    const chunk = this.currentChunk;
+    if (!chunk) return;
+    if (this.playerTileX !== MID || this.playerTileY !== MID) return;
+
+    if (chunk.chunkType === ChunkType.Shop && !chunk.shopPurchased) {
+      this.showMessage('🏪 按 F 与商人交易', 1200);
+    } else if (chunk.state === 'anchored' && chunk.chunkType === ChunkType.Shop) {
+      const now = Date.now();
+      if (chunk.shopRefreshAt === 0 || now >= chunk.shopRefreshAt) {
+        this.showMessage('🏪 按 F 查看商品 (已刷新)', 1200);
+      } else {
+        const mins = Math.ceil((chunk.shopRefreshAt - now) / 60000);
+        this.showMessage(`🏪 按 F 查看商品 | 下次刷新: ${mins} 分钟`, 1200);
+      }
+    }
+  }
+
+  /** F 键 — 打开商店 */
+  private tryOpenShop(): void {
+    if (this.overlayOpen) { this.closeOverlay(); return; }
+    const chunk = this.currentChunk;
+    if (!chunk) return;
+    if (this.playerTileX !== MID || this.playerTileY !== MID) {
+      this.showMessage('需要走到商人处才能交易', 1500);
+      return;
+    }
+    if (chunk.chunkType !== ChunkType.Shop) return;
+
+    // 一次性商店（未解放）
+    if (chunk.state !== 'anchored') {
+      if (chunk.shopPurchased) {
+        this.showMessage('此商店已完成交易', 1500);
+        return;
+      }
+      this.openShopUI(chunk.shopOffers, false);
+      return;
+    }
+
+    // 锚定固定商店
+    const now = Date.now();
+    if (chunk.shopRefreshAt === 0 || now >= chunk.shopRefreshAt) {
+      // 刷新商品
+      const seed = Math.floor(now / SHOP_REFRESH_MS);
+      chunk.shopOffers = this.chunkManager.rollShopOffers(seed);
+      chunk.shopRefreshAt = Math.ceil(now / SHOP_REFRESH_MS) * SHOP_REFRESH_MS;
+      chunk.shopPurchased = false; // 每次刷新重置购买次数
+      // 持久化刷新状态（含新商品列表，防刷新绕过）
+      this.chunkManager.saveShopState(chunk.cx, chunk.cy, false, chunk.shopRefreshAt, chunk.shopOffers);
+    }
+    if (chunk.shopPurchased) {
+      const mins = Math.ceil((chunk.shopRefreshAt - now) / 60000);
+      this.showMessage(`本轮商品已购买，下次刷新: ${mins} 分钟`, 2000);
+      return;
+    }
+    this.openShopUI(chunk.shopOffers, true);
+  }
+
+  private openShopUI(offers: string[], isAnchored: boolean): void {
+    this.overlayOpen = true;
+    const W = 500, H = 240;
+    const ox = (VIEWPORT_W - W) / 2, oy = (VIEWPORT_H - H) / 2;
+    const c = this.add.container(ox, oy).setDepth(300);
+    this.overlayContainer = c;
+
+    // 背景
+    const bg = this.add.graphics();
+    bg.fillStyle(0x0a0a20, 0.95);
+    bg.fillRoundedRect(0, 0, W, H, 10);
+    bg.lineStyle(2, 0xcc8800, 1);
+    bg.strokeRoundedRect(0, 0, W, H, 10);
+    c.add(bg);
+
+    c.add(this.add.text(W / 2, 16, '🏪 商店 — 3 选 1', {
+      fontSize: '16px', fontFamily: '"Microsoft YaHei", sans-serif', color: '#ffcc44',
+    }).setOrigin(0.5, 0));
+
+    const btnW = 140, btnH = 155, gap = 10;
+    const startX = (W - (btnW * 3 + gap * 2)) / 2;
+
+    offers.forEach((id, i) => {
+      const def = ITEM_DEFS[id as keyof typeof ITEM_DEFS];
+      const bx = startX + i * (btnW + gap);
+      const by = 40;
+      const canAfford = this.playerCoins >= def.price;
+
+      const btnBg = this.add.graphics();
+      btnBg.fillStyle(canAfford ? 0x1a1a40 : 0x181818, 1);
+      btnBg.fillRoundedRect(bx, by, btnW, btnH, 6);
+      btnBg.lineStyle(2, canAfford ? 0x4466cc : 0x444444, 1);
+      btnBg.strokeRoundedRect(bx, by, btnW, btnH, 6);
+      c.add(btnBg);
+
+      c.add(this.add.text(bx + btnW / 2, by + 14, def.icon, {
+        fontSize: '28px',
+      }).setOrigin(0.5, 0));
+      c.add(this.add.text(bx + btnW / 2, by + 52, def.name, {
+        fontSize: '13px', fontFamily: '"Microsoft YaHei"', color: canAfford ? '#eeeeff' : '#666666',
+      }).setOrigin(0.5, 0));
+      c.add(this.add.text(bx + btnW / 2, by + 72, def.desc, {
+        fontSize: '11px', fontFamily: '"Microsoft YaHei"', color: '#8899aa',
+        wordWrap: { width: btnW - 10 }, align: 'center',
+      }).setOrigin(0.5, 0));
+      c.add(this.add.text(bx + btnW / 2, by + 132, `🪙 ${def.price}`, {
+        fontSize: '14px', fontFamily: 'Consolas', color: canAfford ? '#ffcc44' : '#884400',
+      }).setOrigin(0.5, 0));
+
+      if (canAfford) {
+        const hitArea = this.add.graphics();
+        hitArea.fillStyle(0xffffff, 0);
+        hitArea.fillRect(bx, by, btnW, btnH);
+        hitArea.setInteractive(
+          new Phaser.Geom.Rectangle(bx, by, btnW, btnH),
+          Phaser.Geom.Rectangle.Contains,
+        );
+        hitArea.on('pointerover', () => { btnBg.clear(); btnBg.fillStyle(0x2a2a60, 1); btnBg.fillRoundedRect(bx, by, btnW, btnH, 6); btnBg.lineStyle(2, 0x8899ff, 1); btnBg.strokeRoundedRect(bx, by, btnW, btnH, 6); });
+        hitArea.on('pointerout',  () => { btnBg.clear(); btnBg.fillStyle(0x1a1a40, 1); btnBg.fillRoundedRect(bx, by, btnW, btnH, 6); btnBg.lineStyle(2, 0x4466cc, 1); btnBg.strokeRoundedRect(bx, by, btnW, btnH, 6); });
+        hitArea.on('pointerdown', () => this.purchaseItem(id as keyof typeof ITEM_DEFS, isAnchored));
+        c.add(hitArea);
+      }
+    });
+
+    // 关闭按钮
+    const closeBtn = this.add.text(W - 10, 6, '✕', {
+      fontSize: '18px', color: '#888888',
+    }).setOrigin(1, 0).setInteractive({ useHandCursor: true });
+    closeBtn.on('pointerdown', () => this.closeOverlay());
+    c.add(closeBtn);
+
+    c.add(this.add.text(W / 2, H - 14, `当前金币: 🪙 ${this.playerCoins}  |  ESC 关闭`, {
+      fontSize: '11px', fontFamily: 'Consolas', color: '#667788',
+    }).setOrigin(0.5, 1));
+
+    this.input.keyboard!.once('keydown-ESC', () => this.closeOverlay());
+    this.input.keyboard!.once('keydown-F',   () => this.closeOverlay());
+  }
+
+  private purchaseItem(id: keyof typeof ITEM_DEFS, isAnchored: boolean): void {
+    const def = ITEM_DEFS[id];
+    if (this.playerCoins < def.price) return;
+    this.playerCoins -= def.price;
+
+    // 永久升级：立即生效，不进背包
+    const permanentUpgrades: ItemId[] = ['firepower_up', 'max_hp_up', 'scout_jammer'];
+    if (permanentUpgrades.includes(id)) {
+      if (id === 'firepower_up')   this.playerDamageBonus++;
+      if (id === 'max_hp_up')     { this.playerMaxHpBonus += 5; this.playerHp += 5; }
+      if (id === 'scout_jammer')  this.scoutRadiusReduction++;
+    } else {
+      // 消耗品/增益符：加入背包
+      const existing = this.inventory.find(i => i.id === id);
+      if (existing && def.stackable) {
+        existing.qty++;
+      } else if (!existing) {
+        this.inventory.push({ id, qty: 1 });
+      }
+    }
+
+    // 标记商店已购买
+    const chunk = this.currentChunk!;
+    chunk.shopPurchased = true;
+    // 锚定商店：持久化冷却状态，防刷新绕过
+    if (isAnchored) {
+      this.chunkManager.saveShopState(chunk.cx, chunk.cy, true, chunk.shopRefreshAt);
+    }
+
+    // 一次性商店：解放区块，获得钥匙
+    if (!isAnchored) {
+      this.chunkManager.liberateChunk(chunk.cx, chunk.cy);
+      const gridSnapshot = chunk.grid.map(row => [...row]);
+      const label = `🏪 商店 (${chunk.cx}, ${chunk.cy})`;
+      this.playerKeys.push({ grid: gridSnapshot, label });
+      if (this.chestSprite) {
+        this.tweens.killTweensOf(this.chestSprite);
+        this.chestSprite.destroy();
+        this.chestSprite = null;
+      }
+      this.cameras.main.flash(400, 100, 180, 50);
+      this.time.delayedCall(100, () =>
+        this.showMessage(`购买了「${def.icon} ${def.name}」！\n🔑 获得地图钥匙「${label}」`, 3000));
+    } else {
+      this.showMessage(`购买了「${def.icon} ${def.name}」！`, 2000);
+    }
+
+    this.closeOverlay();
+    this.updateHUD();
+  }
+
+  /* ==============================================================
+   * BAG (B 键)
+   * ============================================================== */
+
+  private openBagUI(): void {
+    if (this.overlayOpen) { this.closeOverlay(); return; }
+    this.overlayOpen = true;
+
+    const W = 460, itemH = 46, padding = 12;
+    const rows = Math.max(1, this.inventory.length);
+    const H = 50 + rows * itemH + 30;
+    const ox = (VIEWPORT_W - W) / 2, oy = Math.max(10, (VIEWPORT_H - H) / 2);
+
+    const c = this.add.container(ox, oy).setDepth(300);
+    this.overlayContainer = c;
+
+    const bg = this.add.graphics();
+    bg.fillStyle(0x0a0a20, 0.95);
+    bg.fillRoundedRect(0, 0, W, H, 10);
+    bg.lineStyle(2, 0x4466cc, 1);
+    bg.strokeRoundedRect(0, 0, W, H, 10);
+    c.add(bg);
+
+    c.add(this.add.text(W / 2, 14, `🎒 背包  (🪙 ${this.playerCoins})`, {
+      fontSize: '15px', fontFamily: '"Microsoft YaHei", sans-serif', color: '#aabbff',
+    }).setOrigin(0.5, 0));
+
+    const closeBtn = this.add.text(W - 10, 8, '✕', {
+      fontSize: '16px', color: '#888888',
+    }).setOrigin(1, 0).setInteractive({ useHandCursor: true });
+    closeBtn.on('pointerdown', () => this.closeOverlay());
+    c.add(closeBtn);
+
+    if (this.inventory.length === 0) {
+      c.add(this.add.text(W / 2, 50 + itemH / 2, '背包是空的', {
+        fontSize: '14px', fontFamily: '"Microsoft YaHei"', color: '#556677',
+      }).setOrigin(0.5));
+    } else {
+      this.inventory.forEach((item, idx) => {
+        const def = ITEM_DEFS[item.id];
+        const by = 44 + idx * itemH;
+        const rowBg = this.add.graphics();
+        rowBg.fillStyle(0x151530, 1);
+        rowBg.fillRoundedRect(padding, by, W - padding * 2, itemH - 4, 4);
+        c.add(rowBg);
+
+        c.add(this.add.text(padding + 8, by + (itemH - 4) / 2, `${def.icon} ${def.name}`, {
+          fontSize: '14px', fontFamily: '"Microsoft YaHei"', color: '#ddeeff',
+        }).setOrigin(0, 0.5));
+
+        if (item.qty > 1) {
+          c.add(this.add.text(padding + 120, by + (itemH - 4) / 2, `×${item.qty}`, {
+            fontSize: '13px', fontFamily: 'Consolas', color: '#88aacc',
+          }).setOrigin(0, 0.5));
+        }
+
+        c.add(this.add.text(W / 2, by + (itemH - 4) / 2, def.desc, {
+          fontSize: '11px', fontFamily: '"Microsoft YaHei"', color: '#667788',
+        }).setOrigin(0.5, 0.5));
+
+        // 消耗品/增益符才能手动使用（永久升级在购买时已自动生效）
+        const usable = ['first_aid', 'ration', 'smoke_bomb', 'speed_rune', 'shield'];
+        if (usable.includes(item.id)) {
+          const useBtn = this.add.text(W - padding - 8, by + (itemH - 4) / 2, '[使用]', {
+            fontSize: '13px', fontFamily: '"Microsoft YaHei"', color: '#44cc88',
+          }).setOrigin(1, 0.5).setInteractive({ useHandCursor: true });
+          useBtn.on('pointerover', () => useBtn.setColor('#88ffbb'));
+          useBtn.on('pointerout',  () => useBtn.setColor('#44cc88'));
+          useBtn.on('pointerdown', () => { this.useItem(item.id); this.closeOverlay(); this.openBagUI(); });
+          c.add(useBtn);
+        }
+      });
+    }
+
+    c.add(this.add.text(W / 2, H - 12, 'B / ESC 关闭', {
+      fontSize: '11px', fontFamily: 'Consolas', color: '#445566',
+    }).setOrigin(0.5, 1));
+
+    this.input.keyboard!.once('keydown-ESC', () => this.closeOverlay());
+    this.input.keyboard!.once('keydown-B',   () => this.closeOverlay());
+  }
+
+  private useItem(id: string): void {
+    const maxHp = PLAYER_MAX_HP + this.playerMaxHpBonus;
+    switch (id) {
+      case 'first_aid':
+        this.playerHp = Math.min(maxHp, this.playerHp + 5);
+        this.showFloatingText('+5❤️', this.playerTileX * TILE_SIZE + TILE_SIZE / 2, (this.playerTileY - 1) * TILE_SIZE);
+        break;
+      case 'ration':
+        this.healBank = Math.min(HEAL_BANK_MAX, this.healBank + 50);
+        this.showFloatingText('+50💊', this.playerTileX * TILE_SIZE + TILE_SIZE / 2, (this.playerTileY - 1) * TILE_SIZE);
+        break;
+      case 'smoke_bomb':
+        this.smokeStepsLeft = 3;
+        this.showMessage('💨 烟雾弹！敌人 3 步内无法感应你', 2000);
+        break;
+      case 'speed_rune':
+        this.speedRuneActive = true;
+        this.showMessage('⚡ 加速符激活！移动间隔减半', 2000);
+        break;
+      case 'shield':
+        this.shieldActive = true;
+        this.showMessage('🛡 护盾激活！下次受伤免疫', 2000);
+        break;
+      case 'firepower_up':
+        this.playerDamageBonus++;
+        this.showMessage(`🔥 火力强化！攻击力 +1（当前 +${this.playerDamageBonus}）`, 2000);
+        break;
+      case 'max_hp_up':
+        this.playerMaxHpBonus += 5;
+        this.playerHp += 5;  // 立即恢复等量血量
+        this.showMessage(`💖 最大血量 +5（当前上限 ${PLAYER_MAX_HP + this.playerMaxHpBonus}）`, 2000);
+        break;
+      case 'scout_jammer':
+        this.scoutRadiusReduction++;
+        this.showMessage(`📡 侦测压制！Scout 感应半径 -1（共 -${this.scoutRadiusReduction}）`, 2000);
+        break;
+    }
+    // 扣除背包
+    const item = this.inventory.find(i => i.id === id);
+    if (item) {
+      item.qty--;
+      if (item.qty <= 0) this.inventory.splice(this.inventory.indexOf(item), 1);
+    }
+    this.updateHUD();
+  }
+
+  private closeOverlay(): void {
+    if (this.overlayContainer) {
+      this.overlayContainer.destroy(true);
+      this.overlayContainer = null;
+    }
+    this.overlayOpen = false;
+    // 清除可能残留的 ESC/F/B 监听
+    this.input.keyboard?.removeAllListeners('keydown-ESC');
+    this.input.keyboard?.removeAllListeners('keydown-F');
+    this.input.keyboard?.removeAllListeners('keydown-B');
   }
 
   /* ================================================================
@@ -993,7 +1417,7 @@ export class GameScene extends Phaser.Scene {
 
     const healBankStr = isHome ? `  💊 ${this.healBank}/${HEAL_BANK_MAX}` : '';
     const anchorStr   = isHome ? `  |  🔒 ${this.chunkManager.getAnchoredCount()}` : '';
-    this.hudKeys.setText(`🔑 ${this.playerKeys.length}${anchorStr}  |  ❤️ ${this.playerHp}/${PLAYER_MAX_HP}${healBankStr}`);
+    this.hudKeys.setText(`🔑 ${this.playerKeys.length}${anchorStr}  |  ❤️ ${this.playerHp}/${PLAYER_MAX_HP + this.playerMaxHpBonus}${healBankStr}  |  🪙 ${this.playerCoins}`);
 
     if (!isHome && chunk.state !== 'anchored' && chunk.chunkType === ChunkType.Wild) {
       const c = chunk.fragments.filter(f => f.collected).length;
@@ -1057,6 +1481,15 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
+  private gainCoins(amount: number): void {
+    this.playerCoins += amount;
+    // 浮动文字显示在玩家上方
+    const px = this.playerTileX * TILE_SIZE + TILE_SIZE / 2;
+    const py = (this.playerTileY - 1) * TILE_SIZE;
+    this.showFloatingText(`+${amount}🪙`, px, py);
+    this.updateHUD();
+  }
+
   private showFloatingText(text: string, x: number, y: number): void {
     // 需要加上 gameLayer 偏移
     const ft = this.add.text(OFFSET_X + x, OFFSET_Y + y, text, {
@@ -1088,6 +1521,11 @@ export class GameScene extends Phaser.Scene {
       keys:   this.playerKeys,
       hp:     this.playerHp,
       healBank: this.healBank,
+      coins:  this.playerCoins,
+      inventory: this.inventory,
+      playerDamageBonus: this.playerDamageBonus,
+      playerMaxHpBonus:  this.playerMaxHpBonus,
+      scoutRadiusReduction: this.scoutRadiusReduction,
       timestamp: Date.now(),
     });
   }

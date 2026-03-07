@@ -1,4 +1,9 @@
-import type { ChunkType } from './constants';
+import type { ChunkType, ItemId } from './constants';
+
+export interface InventoryItem {
+  id: ItemId;
+  qty: number;
+}
 
 export interface FragmentInfo {
   x: number;
@@ -32,6 +37,9 @@ export interface ChunkData {
   enemies: EnemyData[];
   chestUnlocked: boolean;
   chestOpened: boolean;
+  shopPurchased: boolean;    // 一次性商店：是否已购买
+  shopOffers: ItemId[];      // 本次随机展示的3件商品（seed固定）
+  shopRefreshAt: number;     // 固定商店下次刷新时间戳（ms）
   state: 'uncharted' | 'anchored';
   seed: number;
 }
@@ -51,6 +59,11 @@ export interface SaveData {
   keys: MapKey[];
   hp: number;
   healBank: number;
+  coins: number;
+  inventory: InventoryItem[];
+  playerDamageBonus: number; // 火力强化累计
+  playerMaxHpBonus: number;  // 最大血量累计
+  scoutRadiusReduction: number; // 侦测压制累计
   timestamp: number;
 }
 
@@ -58,4 +71,7 @@ export interface AnchoredChunkData {
   grid: number[][];
   type: string;
   anchoredAt: number;
+  shopPurchased?: boolean;
+  shopRefreshAt?: number;
+  shopOffers?: string[];
 }
