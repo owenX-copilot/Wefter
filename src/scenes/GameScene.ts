@@ -379,6 +379,7 @@ export class GameScene extends Phaser.Scene {
     // 区块边框
     const border = this.add.graphics();
     if (isHome) border.lineStyle(2, Colors.HOME, 0.7);
+    else if (isAnchored && chunk.chunkType === ChunkType.Shop) border.lineStyle(2, 0xffcc44, 0.8);
     else if (isAnchored) border.lineStyle(2, Colors.ANCHORED, 0.6);
     else border.lineStyle(1, 0x1a1a38, 0.4);
     border.strokeRect(0, 0, CHUNK_PX, CHUNK_PX);

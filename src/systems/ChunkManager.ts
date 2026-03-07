@@ -75,10 +75,14 @@ export class ChunkManager {
     if (this.anchoredData[k]) {
       if (!this.chunks.has(k)) {
         const storedType = (this.anchoredData[k].type as ChunkType) || ChunkType.Wild;
+        // 锚定商店用全开放无迷宫地板；其他类型用存档的 grid
+        const anchoredGrid = storedType === ChunkType.Shop
+          ? MazeGenerator.generateShopFloor()
+          : this.anchoredData[k].grid;
         this.chunks.set(k, {
           cx, cy,
           chunkType: storedType,
-          grid: this.anchoredData[k].grid,
+          grid: anchoredGrid,
           fragments: [],
           enemies: [],
           chestUnlocked: true,

@@ -162,6 +162,28 @@ export class MazeGenerator {
   }
 
   /**
+   * 生成锚定商店网格——全开放地板 + 围墙 + 四方出口（无迷宫）
+   */
+  static generateShopFloor(): number[][] {
+    const size = CHUNK_TILES;
+    const grid: number[][] = Array.from(
+      { length: size },
+      () => new Array(size).fill(TileType.Floor),
+    );
+    for (let i = 0; i < size; i++) {
+      grid[0][i]      = TileType.Wall;
+      grid[size-1][i] = TileType.Wall;
+      grid[i][0]      = TileType.Wall;
+      grid[i][size-1] = TileType.Wall;
+    }
+    grid[0][MID]      = TileType.Exit;
+    grid[size-1][MID] = TileType.Exit;
+    grid[MID][0]      = TileType.Exit;
+    grid[MID][size-1] = TileType.Exit;
+    return grid;
+  }
+
+  /**
    * 在通路格上放置碎片（保证可达）
    */
   static placeFragments(
