@@ -73,4 +73,5 @@ export interface AnchoredChunkData {
   anchoredAt: number;
   shopPurchased?: boolean;
   shopRefreshAt?: number;
+  shopOffers?: string[];
 }

@@ -84,7 +84,7 @@ export class ChunkManager {
           chestUnlocked: true,
           chestOpened: true,
           shopPurchased: this.anchoredData[k].shopPurchased ?? false,
-          shopOffers: [],   // 锚定商店由 GameScene.tryOpenShop 按时间刷新
+          shopOffers: (this.anchoredData[k].shopOffers as import('../constants').ItemId[] | undefined) ?? [],
           shopRefreshAt: this.anchoredData[k].shopRefreshAt ?? 0,
           state: 'anchored',
           seed: 0,
@@ -203,11 +203,12 @@ export class ChunkManager {
   }
 
   /** 持久化锚定商店的冷却状态（防刷新绕过） */
-  saveShopState(cx: number, cy: number, shopPurchased: boolean, shopRefreshAt: number): void {
+  saveShopState(cx: number, cy: number, shopPurchased: boolean, shopRefreshAt: number, shopOffers?: import('../constants').ItemId[]): void {
     const k = this.key(cx, cy);
     if (this.anchoredData[k]) {
       this.anchoredData[k].shopPurchased = shopPurchased;
       this.anchoredData[k].shopRefreshAt = shopRefreshAt;
+      if (shopOffers !== undefined) this.anchoredData[k].shopOffers = shopOffers;
       SaveManager.saveAnchored(this.anchoredData);
     }
   }

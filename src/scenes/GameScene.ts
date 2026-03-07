@@ -996,8 +996,8 @@ export class GameScene extends Phaser.Scene {
       chunk.shopOffers = this.chunkManager.rollShopOffers(seed);
       chunk.shopRefreshAt = Math.ceil(now / SHOP_REFRESH_MS) * SHOP_REFRESH_MS;
       chunk.shopPurchased = false; // 每次刷新重置购买次数
-      // 持久化刷新状态（防刷新绕过）
-      this.chunkManager.saveShopState(chunk.cx, chunk.cy, false, chunk.shopRefreshAt);
+      // 持久化刷新状态（含新商品列表，防刷新绕过）
+      this.chunkManager.saveShopState(chunk.cx, chunk.cy, false, chunk.shopRefreshAt, chunk.shopOffers);
     }
     if (chunk.shopPurchased) {
       const mins = Math.ceil((chunk.shopRefreshAt - now) / 60000);
