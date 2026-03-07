@@ -992,7 +992,8 @@ export class GameScene extends Phaser.Scene {
     else this.hudStatus.setText('🌿 荒野');
 
     const healBankStr = isHome ? `  💊 ${this.healBank}/${HEAL_BANK_MAX}` : '';
-    this.hudKeys.setText(`🔑 ${this.playerKeys.length}  |  🔒 ${this.chunkManager.getAnchoredCount()}  |  ❤️ ${this.playerHp}/${PLAYER_MAX_HP}${healBankStr}`);
+    const anchorStr   = isHome ? `  |  🔒 ${this.chunkManager.getAnchoredCount()}` : '';
+    this.hudKeys.setText(`🔑 ${this.playerKeys.length}${anchorStr}  |  ❤️ ${this.playerHp}/${PLAYER_MAX_HP}${healBankStr}`);
 
     if (!isHome && chunk.state !== 'anchored' && chunk.chunkType === ChunkType.Wild) {
       const c = chunk.fragments.filter(f => f.collected).length;
