@@ -5,5 +5,14 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     target: 'es2020',
+    rollupOptions: {
+      external: ['phaser'],
+      output: {
+        format: 'iife',
+        globals: {
+          phaser: 'Phaser',
+        },
+      },
+    },
   },
 });
