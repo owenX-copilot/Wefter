@@ -377,6 +377,16 @@ export class GameScene extends Phaser.Scene {
     this.playerChunkY = cy;
     this.currentChunk = this.chunkManager.getChunk(cx, cy);
 
+    // 未锚定区块：渲染前预填中心 3×3 为已探索（出生点，已被玩家看到）
+    if (this.currentChunk.state !== 'anchored') {
+      const ck = `${cx},${cy}`;
+      if (!this.chunkVisited.has(ck)) this.chunkVisited.set(ck, new Set());
+      const visited = this.chunkVisited.get(ck)!;
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dx = -1; dx <= 1; dx++)
+          visited.add(`${MID + dx},${MID + dy}`);
+    }
+
     this.clearRendered();
     this.renderChunk(this.currentChunk);
     this.renderFragments(this.currentChunk);
@@ -491,7 +501,7 @@ export class GameScene extends Phaser.Scene {
           else {
             // 未锚定：已探索的格子显示亮色
             const isVisited = this.chunkVisited.get(ck)?.has(`${x},${y}`) ?? false;
-            key = isVisited ? 'visitedFloor' : (inCenter ? 'centerFloor' : 'floor');
+            key = isVisited ? 'visitedFloor' : 'floor';
           }
           const sp = this.add.sprite(px, py, key).setOrigin(0);
           this.mapLayer.add(sp);
