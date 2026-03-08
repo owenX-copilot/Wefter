@@ -97,6 +97,10 @@ export class GameScene extends Phaser.Scene {
    * LIFECYCLE
    * ================================================================ */
 
+  init(data: { slot?: number }): void {
+    SaveManager.setSlot(data?.slot ?? 0);
+  }
+
   create(): void {
     // ---- 系统初始化 ----
     this.seedProvider = new SeedProvider();

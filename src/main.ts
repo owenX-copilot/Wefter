@@ -1,6 +1,8 @@
 import Phaser from 'phaser';
 import { VIEWPORT_W, VIEWPORT_H } from './constants';
 import { BootScene } from './scenes/BootScene';
+import { StartScene } from './scenes/StartScene';
+import { SlotScene } from './scenes/SlotScene';
 import { GameScene } from './scenes/GameScene';
 import { MapScene } from './scenes/MapScene';
 import { AnchorScene } from './scenes/AnchorScene';
@@ -13,7 +15,7 @@ const config: Phaser.Types.Core.GameConfig = {
   backgroundColor: '#0a0a12',
   pixelArt: false,
   antialias: true,
-  scene: [BootScene, GameScene, MapScene, AnchorScene],
+  scene: [BootScene, StartScene, SlotScene, GameScene, MapScene, AnchorScene],
   scale: {
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,
