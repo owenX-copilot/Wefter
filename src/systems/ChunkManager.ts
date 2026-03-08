@@ -34,8 +34,8 @@ export class ChunkManager {
     // 位置哈希：与 seed 无关，同一坐标永远相同类型
     const n = ((Math.imul(cx, 0x9e3779b9) ^ Math.imul(cy, 0x6c62272e)) >>> 0);
     const r = n % 20;
-    if (r < 12) return ChunkType.Wild;   // 60%
-    if (r < 19) return ChunkType.Enemy;  // 35%
+    if (r < 9)  return ChunkType.Wild;   // 45%
+    if (r < 19) return ChunkType.Enemy;  // 50%
     return ChunkType.Shop;               // 5%
   }
 

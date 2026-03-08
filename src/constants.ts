@@ -92,3 +92,48 @@ export const Colors = {
   BULLET_P:      0x00ff88,
   BULLET_E:      0xff6644,
 } as const;
+
+// === 装备系统 ===
+export type StatType = 'hp' | 'atk' | 'spd' | 'crit_rate' | 'crit_dmg' | 'dodge';
+export type EquipSlot = 'weapon' | 'armor' | 'trinket';
+
+export const STAT_DEFS: Record<StatType, { name: string; icon: string; unit: string }> = {
+  hp:        { name: '生命',     icon: '❤️', unit: '' },
+  atk:       { name: '攻击',     icon: '⚔️', unit: '' },
+  spd:       { name: '速度',     icon: '💨', unit: '%' },
+  crit_rate: { name: '暴击率',   icon: '🎯', unit: '%' },
+  crit_dmg:  { name: '暴击伤害', icon: '💥', unit: '%' },
+  dodge:     { name: '闪避',     icon: '🌀', unit: '%' },
+};
+
+export const RARITY_NAMES  = ['普通', '稀有', '史诗'] as const;
+export const RARITY_COLORS = ['#888888', '#4488ff', '#aa44ff'] as const;
+
+export const SLOT_NAMES: Record<EquipSlot, string> = { weapon: '武器', armor: '护甲', trinket: '饰品' };
+
+export const SLOT_MAIN_STATS: Record<EquipSlot, StatType[]> = {
+  weapon:  ['atk', 'crit_rate', 'crit_dmg'],
+  armor:   ['hp', 'dodge'],
+  trinket: ['hp', 'atk', 'spd', 'crit_rate', 'crit_dmg', 'dodge'],
+};
+
+/** [common, rare, epic] 每个是 [min, max] */
+export const MAIN_STAT_RANGES: Record<StatType, [number, number][]> = {
+  hp:        [[5, 10],  [10, 20], [18, 30]],
+  atk:       [[1, 2],   [2, 4],   [4, 6]],
+  spd:       [[3, 6],   [5, 12],  [10, 18]],
+  crit_rate: [[3, 6],   [5, 12],  [10, 18]],
+  crit_dmg:  [[8, 15],  [15, 30], [25, 45]],
+  dodge:     [[3, 5],   [5, 10],  [8, 15]],
+};
+
+export const SUB_STAT_RANGES: Record<StatType, [number, number][]> = {
+  hp:        [[2, 5],   [4, 10],  [8, 15]],
+  atk:       [[1, 1],   [1, 2],   [2, 3]],
+  spd:       [[1, 3],   [2, 6],   [4, 10]],
+  crit_rate: [[1, 3],   [2, 6],   [4, 10]],
+  crit_dmg:  [[3, 8],   [6, 15],  [10, 25]],
+  dodge:     [[1, 3],   [2, 5],   [4, 8]],
+};
+
+export const EQUIP_INVENTORY_MAX = 20;

@@ -1,8 +1,23 @@
-import type { ChunkType, ItemId } from './constants';
+import type { ChunkType, ItemId, StatType, EquipSlot } from './constants';
 
 export interface InventoryItem {
   id: ItemId;
   qty: number;
+}
+
+export interface StatRoll {
+  type: StatType;
+  value: number;
+}
+
+export interface Equipment {
+  id: string;
+  name: string;
+  slot: EquipSlot;
+  rarity: 0 | 1 | 2;
+  mainStat: StatRoll;
+  subStats: StatRoll[];
+  obtainedAt: number;
 }
 
 export interface FragmentInfo {
@@ -64,6 +79,8 @@ export interface SaveData {
   playerDamageBonus: number; // 火力强化累计
   playerMaxHpBonus: number;  // 最大血量累计
   scoutRadiusReduction: number; // 侦测压制累计
+  equipped: { weapon: Equipment | null; armor: Equipment | null; trinket: Equipment | null };
+  equipInventory: Equipment[];
   timestamp: number;
 }
 

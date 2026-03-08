@@ -8,12 +8,15 @@ import {
   SNIPER_DETECT_STEPS, PLAYER_FIRE_RANGE, SNIPER_FIRE_RATE,
   COIN_FRAGMENT, COIN_WILD_CHEST, COIN_ENEMY_KILL, COIN_ENEMY_CHEST,
   ITEM_DEFS, ITEM_POOL, SHOP_REFRESH_MS, SHOP_OFFER_COUNT,
+  STAT_DEFS, RARITY_NAMES, RARITY_COLORS, SLOT_NAMES, EQUIP_INVENTORY_MAX,
 } from '../constants';
+import type { StatType, EquipSlot } from '../constants';
 import type { ItemId } from '../constants';
-import type { ChunkData, MapKey, SaveData, EnemyData, InventoryItem } from '../types';
+import type { ChunkData, MapKey, SaveData, EnemyData, InventoryItem, Equipment, StatRoll } from '../types';
 import { SeedProvider } from '../systems/SeedProvider';
 import { ChunkManager } from '../systems/ChunkManager';
 import { SaveManager } from '../systems/SaveManager';
+import { EquipmentGenerator } from '../systems/EquipmentGenerator';
 
 /**
  * 主游戏场景
@@ -54,6 +57,11 @@ export class GameScene extends Phaser.Scene {
   private speedRuneActive = false;
   private smokeStepsLeft = 0;
 
+  // Equipment
+  private equipped: { weapon: Equipment | null; armor: Equipment | null; trinket: Equipment | null } = { weapon: null, armor: null, trinket: null };
+  private equipInventory: Equipment[] = [];
+  private equipStats: Record<StatType, number> = { hp: 0, atk: 0, spd: 0, crit_rate: 0, crit_dmg: 0, dodge: 0 };
+
   // Movement
   private isMoving = false;
   private moveTarget = { x: 0, y: 0 };
@@ -72,6 +80,7 @@ export class GameScene extends Phaser.Scene {
   private keyF!: Phaser.Input.Keyboard.Key;
   private keyB!: Phaser.Input.Keyboard.Key;
   private keyM!: Phaser.Input.Keyboard.Key;
+  private keyG!: Phaser.Input.Keyboard.Key;
   private keyTab!: Phaser.Input.Keyboard.Key;
 
   // HUD
@@ -121,6 +130,8 @@ export class GameScene extends Phaser.Scene {
       this.playerDamageBonus    = save.playerDamageBonus ?? 0;
       this.playerMaxHpBonus     = save.playerMaxHpBonus ?? 0;
       this.scoutRadiusReduction = save.scoutRadiusReduction ?? 0;
+      this.equipped       = save.equipped ?? { weapon: null, armor: null, trinket: null };
+      this.equipInventory = save.equipInventory ?? [];
 
       // 迁移：旧存档可能把永久升级误放进背包，读档时消化掉
       const permanents: ItemId[] = ['firepower_up', 'max_hp_up', 'scout_jammer'];
@@ -135,6 +146,9 @@ export class GameScene extends Phaser.Scene {
         return false; // 从背包移除
       });
     }
+
+    // 计算装备词条汇总
+    this.recalcEquipStats();
 
     // ---- 渲染层（gameLayer 用 offset 保证居中）----
     this.gameLayer = this.add.container(OFFSET_X, OFFSET_Y);
@@ -160,6 +174,7 @@ export class GameScene extends Phaser.Scene {
     this.keyF = kb.addKey(Phaser.Input.Keyboard.KeyCodes.F);
     this.keyB = kb.addKey(Phaser.Input.Keyboard.KeyCodes.B);
     this.keyM = kb.addKey(Phaser.Input.Keyboard.KeyCodes.M);
+    this.keyG = kb.addKey(Phaser.Input.Keyboard.KeyCodes.G);
     this.keyTab = kb.addKey(Phaser.Input.Keyboard.KeyCodes.TAB);
 
     // keydown/keyup 维护方向状态，完全绕开系统 key-repeat
@@ -272,6 +287,7 @@ export class GameScene extends Phaser.Scene {
       if (Phaser.Input.Keyboard.JustDown(this.keyF))   this.tryOpenShop();
       if (Phaser.Input.Keyboard.JustDown(this.keyB))   this.openBagUI();
       if (Phaser.Input.Keyboard.JustDown(this.keyM))   this.openMap();
+      if (Phaser.Input.Keyboard.JustDown(this.keyG))   this.openEquipUI();
       if (Phaser.Input.Keyboard.JustDown(this.keyTab)) this.showStatus();
       return;
     }
@@ -288,8 +304,8 @@ export class GameScene extends Phaser.Scene {
     // 目标格有存活敌人 → 近战攻击（不位移）
     const enemyHere = this.getEnemyAt(nx, ny);
     if (enemyHere) {
-      this.moveCooldown = this.speedRuneActive ? GameScene.MOVE_STEP_MS * 0.5 : GameScene.MOVE_STEP_MS;
-      this.dealDamageToEnemy(enemyHere, 1);
+      this.moveCooldown = this.calcMoveCooldown();
+      this.dealDamageToEnemy(enemyHere, this.calcPlayerDamage());
       this.showFloatingText('⚔', nx * TILE_SIZE + TILE_SIZE / 2, (ny - 1) * TILE_SIZE);
       this.processTurn();
       return;
@@ -297,7 +313,7 @@ export class GameScene extends Phaser.Scene {
 
     this.isMoving = true;
     this.moveTarget = { x: nx, y: ny };
-    this.moveCooldown = this.speedRuneActive ? GameScene.MOVE_STEP_MS * 0.5 : GameScene.MOVE_STEP_MS;
+    this.moveCooldown = this.calcMoveCooldown();
   }
 
   /* ================================================================
@@ -320,7 +336,7 @@ export class GameScene extends Phaser.Scene {
 
   private tryHomeHeal(): void {
     if (!this.chunkManager.isHome(this.playerChunkX, this.playerChunkY)) return;
-    const maxHp = PLAYER_MAX_HP + this.playerMaxHpBonus;
+    const maxHp = this.getMaxHp();
     const missing = maxHp - this.playerHp;
     if (missing <= 0) {
       this.showMessage('🏠 家园——生命已满', 1500);
@@ -569,6 +585,7 @@ export class GameScene extends Phaser.Scene {
     // 打开宝箱
     chunk.chestOpened = true;
     this.gainCoins(COIN_WILD_CHEST);
+    this.tryChestEquipDrop(chunk.cx, chunk.cy, 'wild_chest');
     this.chunkManager.liberateChunk(chunk.cx, chunk.cy);
 
     // 保存当前地图快照为钥匙（快照只含迷宫结构，不含任何关卡内容）
@@ -730,6 +747,7 @@ export class GameScene extends Phaser.Scene {
         this.enemyHpBars.delete(e.id);
       }
       this.showFloatingText('💀', e.x * TILE_SIZE + TILE_SIZE / 2, (e.y - 1) * TILE_SIZE);
+      this.tryEnemyEquipDrop(e);
       this.checkAllEnemiesCleared();
     }
   }
@@ -739,6 +757,11 @@ export class GameScene extends Phaser.Scene {
     if (this.shieldActive) {
       this.shieldActive = false;
       this.showFloatingText('🛡 护盾!', this.playerTileX * TILE_SIZE + TILE_SIZE / 2, (this.playerTileY - 1) * TILE_SIZE);
+      return;
+    }
+    // 闪避判定
+    if (this.equipStats.dodge > 0 && Math.random() * 100 < this.equipStats.dodge) {
+      this.showFloatingText('🌀 闪避!', this.playerTileX * TILE_SIZE + TILE_SIZE / 2, (this.playerTileY - 1) * TILE_SIZE);
       return;
     }
     this.playerHp = Math.max(0, this.playerHp - amount);
@@ -757,7 +780,7 @@ export class GameScene extends Phaser.Scene {
     this.shieldActive = false;
     this.smokeStepsLeft = 0;
     this.time.delayedCall(1600, () => {
-      this.playerHp = PLAYER_MAX_HP + this.playerMaxHpBonus;
+      this.playerHp = this.getMaxHp();
       this.playerInvincible = false;
       this.playerTileX = MID;
       this.playerTileY = MID;
@@ -836,7 +859,7 @@ export class GameScene extends Phaser.Scene {
       (Math.abs(b.x - this.playerTileX) + Math.abs(b.y - this.playerTileY)) ? a : b,
     );
     this.firePlayerBullet(this.playerTileX, this.playerTileY, target.x, target.y);
-    this.dealDamageToEnemy(target, 1 + this.playerDamageBonus);
+    this.dealDamageToEnemy(target, this.calcPlayerDamage());
   }
 
   // ---- 回合处理 ----
@@ -944,6 +967,7 @@ export class GameScene extends Phaser.Scene {
 
     chunk.chestOpened = true;
     this.gainCoins(COIN_ENEMY_CHEST);
+    this.tryChestEquipDrop(chunk.cx, chunk.cy, 'enemy_chest');
     this.chunkManager.liberateChunk(chunk.cx, chunk.cy);
     const gridSnapshot = chunk.grid.map(row => [...row]);
     const label = `从 (${chunk.cx}, ${chunk.cy}) 获得`;
@@ -1238,7 +1262,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private useItem(id: string): void {
-    const maxHp = PLAYER_MAX_HP + this.playerMaxHpBonus;
+    const maxHp = this.getMaxHp();
     switch (id) {
       case 'first_aid':
         this.playerHp = Math.min(maxHp, this.playerHp + 5);
@@ -1267,7 +1291,7 @@ export class GameScene extends Phaser.Scene {
       case 'max_hp_up':
         this.playerMaxHpBonus += 5;
         this.playerHp += 5;  // 立即恢复等量血量
-        this.showMessage(`💖 最大血量 +5（当前上限 ${PLAYER_MAX_HP + this.playerMaxHpBonus}）`, 2000);
+        this.showMessage(`💖 最大血量 +5（当前上限 ${this.getMaxHp()}）`, 2000);
         break;
       case 'scout_jammer':
         this.scoutRadiusReduction++;
@@ -1289,10 +1313,11 @@ export class GameScene extends Phaser.Scene {
       this.overlayContainer = null;
     }
     this.overlayOpen = false;
-    // 清除可能残留的 ESC/F/B 监听
+    // 清除可能残留的 ESC/F/B/G 监听
     this.input.keyboard?.removeAllListeners('keydown-ESC');
     this.input.keyboard?.removeAllListeners('keydown-F');
     this.input.keyboard?.removeAllListeners('keydown-B');
+    this.input.keyboard?.removeAllListeners('keydown-G');
   }
 
   /* ================================================================
@@ -1364,8 +1389,10 @@ export class GameScene extends Phaser.Scene {
       const alive = chunk.enemies.filter(e => e.hp > 0).length;
       s += `敌人: ${alive}/${chunk.enemies.length}  宝箱: ${chunk.chestOpened ? '已开启' : chunk.chestUnlocked ? '已解锁' : '待清场'}\n`;
     }
-    s += `生命: ${this.playerHp}/${PLAYER_MAX_HP}\n`;
+    s += `生命: ${this.playerHp}/${this.getMaxHp()}\n`;
     s += `钥匙: ${this.playerKeys.length}  已锚定: ${this.chunkManager.getAnchoredCount()}`;
+    const eqCount = [this.equipped.weapon, this.equipped.armor, this.equipped.trinket].filter(Boolean).length;
+    if (eqCount > 0) s += `\n装备: ${eqCount}/3`;
     this.showMessage(s, 3000);
   }
 
@@ -1434,7 +1461,7 @@ export class GameScene extends Phaser.Scene {
 
     const healBankStr = isHome ? `  💊 ${this.healBank}/${HEAL_BANK_MAX}` : '';
     const anchorStr   = isHome ? `  |  🔒 ${this.chunkManager.getAnchoredCount()}` : '';
-    this.hudKeys.setText(`🔑 ${this.playerKeys.length}${anchorStr}  |  ❤️ ${this.playerHp}/${PLAYER_MAX_HP + this.playerMaxHpBonus}${healBankStr}  |  🪙 ${this.playerCoins}`);
+    this.hudKeys.setText(`🔑 ${this.playerKeys.length}${anchorStr}  |  ❤️ ${this.playerHp}/${this.getMaxHp()}${healBankStr}  |  🪙 ${this.playerCoins}`);
 
     if (!isHome && chunk.state !== 'anchored' && chunk.chunkType === ChunkType.Wild) {
       const c = chunk.fragments.filter(f => f.collected).length;
@@ -1469,7 +1496,7 @@ export class GameScene extends Phaser.Scene {
     const canUseKey = !this.chunkManager.isAnchored(this.playerChunkX, this.playerChunkY)
                    && this.playerKeys.length > 0;
     if (canUseKey) hint += '  |  E 使用钥匙';
-    hint += '  |  M 地图  |  TAB 状态';
+    hint += '  |  G 装备  |  M 地图  |  TAB 状态';
     this.hudHint.setText(hint);
   }
 
@@ -1539,6 +1566,295 @@ export class GameScene extends Phaser.Scene {
   }
 
   /* ================================================================
+   * EQUIPMENT — 词条计算 / 掉落 / 战斗辅助
+   * ================================================================ */
+
+  /** 汇总所有装备的词条数值 */
+  private recalcEquipStats(): void {
+    const s: Record<StatType, number> = { hp: 0, atk: 0, spd: 0, crit_rate: 0, crit_dmg: 0, dodge: 0 };
+    for (const eq of [this.equipped.weapon, this.equipped.armor, this.equipped.trinket]) {
+      if (!eq) continue;
+      s[eq.mainStat.type] += eq.mainStat.value;
+      for (const sub of eq.subStats) s[sub.type] += sub.value;
+    }
+    this.equipStats = s;
+  }
+
+  /** 计算玩家单次伤害（含暴击） */
+  private calcPlayerDamage(): number {
+    const base = 1 + this.playerDamageBonus + this.equipStats.atk;
+    if (this.equipStats.crit_rate > 0 && Math.random() * 100 < this.equipStats.crit_rate) {
+      const mult = 1.5 + this.equipStats.crit_dmg / 100;
+      const dmg = Math.ceil(base * mult);
+      this.showFloatingText('💥暴击!', this.playerTileX * TILE_SIZE + TILE_SIZE / 2, (this.playerTileY - 2) * TILE_SIZE);
+      return dmg;
+    }
+    return base;
+  }
+
+  /** 步进冷却（毫秒） */
+  private calcMoveCooldown(): number {
+    let ms = GameScene.MOVE_STEP_MS;
+    if (this.speedRuneActive) ms *= 0.5;
+    if (this.equipStats.spd > 0) ms *= Math.max(0.3, 1 - this.equipStats.spd / 100);
+    return ms;
+  }
+
+  /** 获得玩家最大 HP（基础 + 商店永久 + 装备） */
+  private getMaxHp(): number {
+    return PLAYER_MAX_HP + this.playerMaxHpBonus + this.equipStats.hp;
+  }
+
+  /** 击杀敌人时尝试掉落装备 */
+  private tryEnemyEquipDrop(e: EnemyData): void {
+    const dist = Math.abs(this.playerChunkX) + Math.abs(this.playerChunkY);
+    const dropSeed = (this.currentChunk!.seed * 31 + e.x * 997 + e.y * 127) >>> 0;
+    if (!EquipmentGenerator.shouldDrop(dropSeed, e.kind, dist)) return;
+    const equip = EquipmentGenerator.generate(dropSeed ^ 0xbeef, dist, 'enemy_kill');
+    this.receiveEquipment(equip);
+  }
+
+  /** 开宝箱时必定掉落一件装备 */
+  private tryChestEquipDrop(cx: number, cy: number, source: string): void {
+    const dist = Math.abs(cx) + Math.abs(cy);
+    const seed = (this.currentChunk!.seed * 37 + cx * 131 + cy * 997) >>> 0;
+    const equip = EquipmentGenerator.generate(seed, dist, source);
+    this.receiveEquipment(equip);
+  }
+
+  /** 获得装备：加入背包或提示已满 */
+  private receiveEquipment(equip: Equipment): void {
+    const rarityColor = RARITY_COLORS[equip.rarity];
+    const rarityName = RARITY_NAMES[equip.rarity];
+    const statDef = STAT_DEFS[equip.mainStat.type];
+    if (this.equipInventory.length >= EQUIP_INVENTORY_MAX) {
+      this.showMessage(`装备背包已满(${EQUIP_INVENTORY_MAX})，无法拾取「${equip.name}」\nG 键打开装备栏整理`, 3000);
+      return;
+    }
+    this.equipInventory.push(equip);
+    this.showMessage(
+      `获得装备: ${rarityName}「${equip.name}」\n${statDef.icon} ${statDef.name} +${equip.mainStat.value}${statDef.unit}` +
+      (equip.subStats.length > 0 ? `  (+${equip.subStats.length}副词条)` : '') +
+      '\nG 键打开装备栏',
+      3000,
+    );
+  }
+
+  /* ================================================================
+   * EQUIPMENT UI  (G 键)
+   * ================================================================ */
+
+  private openEquipUI(): void {
+    if (this.overlayOpen) { this.closeOverlay(); return; }
+    this.overlayOpen = true;
+
+    const W = 600, H = 500;
+    const ox = (VIEWPORT_W - W) / 2, oy = Math.max(5, (VIEWPORT_H - H) / 2);
+    const c = this.add.container(ox, oy).setDepth(300);
+    this.overlayContainer = c;
+
+    // 背景
+    const bg = this.add.graphics();
+    bg.fillStyle(0x0a0a1a, 0.96);
+    bg.fillRoundedRect(0, 0, W, H, 10);
+    bg.lineStyle(2, 0x6644cc, 1);
+    bg.strokeRoundedRect(0, 0, W, H, 10);
+    c.add(bg);
+
+    c.add(this.add.text(W / 2, 12, '⚔️ 装备栏', {
+      fontSize: '16px', fontFamily: '"Microsoft YaHei", sans-serif', color: '#ccbbff',
+    }).setOrigin(0.5, 0));
+
+    // 关闭
+    const closeBtn = this.add.text(W - 10, 6, '✕', {
+      fontSize: '18px', color: '#888888',
+    }).setOrigin(1, 0).setInteractive({ useHandCursor: true });
+    closeBtn.on('pointerdown', () => this.closeOverlay());
+    c.add(closeBtn);
+
+    // ---- 已装备区（顶部3列） ----
+    const slots: EquipSlot[] = ['weapon', 'armor', 'trinket'];
+    const slotW = 180, slotH = 120, slotGap = 10;
+    const slotStartX = (W - (slotW * 3 + slotGap * 2)) / 2;
+
+    slots.forEach((slot, i) => {
+      const sx = slotStartX + i * (slotW + slotGap);
+      const sy = 40;
+      const eq = this.equipped[slot];
+
+      const slotBg = this.add.graphics();
+      slotBg.fillStyle(eq ? 0x1a1a3a : 0x0e0e20, 1);
+      slotBg.fillRoundedRect(sx, sy, slotW, slotH, 6);
+      slotBg.lineStyle(1, eq ? parseInt(RARITY_COLORS[eq.rarity].replace('#', ''), 16) : 0x333355, 0.8);
+      slotBg.strokeRoundedRect(sx, sy, slotW, slotH, 6);
+      c.add(slotBg);
+
+      c.add(this.add.text(sx + slotW / 2, sy + 8, SLOT_NAMES[slot], {
+        fontSize: '11px', fontFamily: '"Microsoft YaHei"', color: '#667788',
+      }).setOrigin(0.5, 0));
+
+      if (eq) {
+        c.add(this.add.text(sx + slotW / 2, sy + 26, eq.name, {
+          fontSize: '14px', fontFamily: '"Microsoft YaHei"', color: RARITY_COLORS[eq.rarity],
+        }).setOrigin(0.5, 0));
+        this.renderStatLine(c, sx + 8, sy + 48, eq.mainStat, true);
+        eq.subStats.forEach((sub, j) => {
+          this.renderStatLine(c, sx + 8, sy + 66 + j * 16, sub, false);
+        });
+        // 卸下按钮
+        const unequipBtn = this.add.text(sx + slotW - 6, sy + slotH - 6, '[卸下]', {
+          fontSize: '11px', fontFamily: '"Microsoft YaHei"', color: '#cc6666',
+        }).setOrigin(1, 1).setInteractive({ useHandCursor: true });
+        unequipBtn.on('pointerdown', () => {
+          if (this.equipInventory.length >= EQUIP_INVENTORY_MAX) {
+            this.showMessage('装备背包已满，无法卸下', 1500); return;
+          }
+          this.equipInventory.push(eq);
+          this.equipped[slot] = null;
+          this.recalcEquipStats();
+          this.closeOverlay();
+          this.openEquipUI();
+        });
+        c.add(unequipBtn);
+      } else {
+        c.add(this.add.text(sx + slotW / 2, sy + slotH / 2, '— 空 —', {
+          fontSize: '13px', fontFamily: '"Microsoft YaHei"', color: '#333355',
+        }).setOrigin(0.5));
+      }
+    });
+
+    // ---- 词条汇总 ----
+    const sumY = 170;
+    const activeStats = (Object.keys(this.equipStats) as StatType[]).filter(k => this.equipStats[k] > 0);
+    if (activeStats.length > 0) {
+      let sumText = '总计: ';
+      activeStats.forEach(k => {
+        const d = STAT_DEFS[k];
+        sumText += `${d.icon}+${this.equipStats[k]}${d.unit}  `;
+      });
+      c.add(this.add.text(W / 2, sumY, sumText, {
+        fontSize: '11px', fontFamily: '"Microsoft YaHei", Consolas', color: '#8899bb',
+      }).setOrigin(0.5, 0));
+    }
+
+    // ---- 装备背包 ----
+    const listTop = 195;
+    c.add(this.add.text(10, listTop, `背包 (${this.equipInventory.length}/${EQUIP_INVENTORY_MAX})`, {
+      fontSize: '13px', fontFamily: '"Microsoft YaHei"', color: '#8899bb',
+    }));
+
+    const itemH = 42;
+    const listH = H - listTop - 30;
+    const maxVisible = Math.floor(listH / itemH);
+
+    if (this.equipInventory.length === 0) {
+      c.add(this.add.text(W / 2, listTop + 30, '没有装备', {
+        fontSize: '13px', fontFamily: '"Microsoft YaHei"', color: '#334455',
+      }).setOrigin(0.5, 0));
+    } else {
+      this.equipInventory.slice(0, maxVisible).forEach((eq, idx) => {
+        const iy = listTop + 22 + idx * itemH;
+        const rowBg = this.add.graphics();
+        rowBg.fillStyle(0x121225, 1);
+        rowBg.fillRoundedRect(8, iy, W - 16, itemH - 4, 4);
+        c.add(rowBg);
+
+        // 名称 + 稀有度颜色
+        c.add(this.add.text(16, iy + 6, `${eq.name}`, {
+          fontSize: '13px', fontFamily: '"Microsoft YaHei"', color: RARITY_COLORS[eq.rarity],
+        }));
+
+        // 槽位标签
+        c.add(this.add.text(80, iy + 6, SLOT_NAMES[eq.slot], {
+          fontSize: '11px', fontFamily: '"Microsoft YaHei"', color: '#556677',
+        }));
+
+        // 主词条
+        const md = STAT_DEFS[eq.mainStat.type];
+        c.add(this.add.text(120, iy + 6, `${md.icon}${md.name}+${eq.mainStat.value}${md.unit}`, {
+          fontSize: '11px', fontFamily: '"Microsoft YaHei", Consolas', color: '#aabbdd',
+        }));
+
+        // 副词条简述
+        if (eq.subStats.length > 0) {
+          const subStr = eq.subStats.map(s => {
+            const d = STAT_DEFS[s.type];
+            return `${d.icon}+${s.value}${d.unit}`;
+          }).join(' ');
+          c.add(this.add.text(120, iy + 22, subStr, {
+            fontSize: '10px', fontFamily: 'Consolas', color: '#667799',
+          }));
+        }
+
+        // 装备按钮
+        const equipBtn = this.add.text(W - 80, iy + itemH / 2 - 2, '[装备]', {
+          fontSize: '12px', fontFamily: '"Microsoft YaHei"', color: '#44cc88',
+        }).setOrigin(0, 0.5).setInteractive({ useHandCursor: true });
+        equipBtn.on('pointerover', () => equipBtn.setColor('#88ffbb'));
+        equipBtn.on('pointerout',  () => equipBtn.setColor('#44cc88'));
+        equipBtn.on('pointerdown', () => {
+          this.equipItem(idx);
+          this.closeOverlay();
+          this.openEquipUI();
+        });
+        c.add(equipBtn);
+
+        // 丢弃按钮
+        const discardBtn = this.add.text(W - 30, iy + itemH / 2 - 2, '[弃]', {
+          fontSize: '11px', fontFamily: '"Microsoft YaHei"', color: '#886644',
+        }).setOrigin(0, 0.5).setInteractive({ useHandCursor: true });
+        discardBtn.on('pointerover', () => discardBtn.setColor('#cc8844'));
+        discardBtn.on('pointerout',  () => discardBtn.setColor('#886644'));
+        discardBtn.on('pointerdown', () => {
+          this.equipInventory.splice(idx, 1);
+          this.closeOverlay();
+          this.openEquipUI();
+        });
+        c.add(discardBtn);
+      });
+
+      if (this.equipInventory.length > maxVisible) {
+        c.add(this.add.text(W / 2, H - 25, `还有 ${this.equipInventory.length - maxVisible} 件未显示…`, {
+          fontSize: '11px', fontFamily: '"Microsoft YaHei"', color: '#445566',
+        }).setOrigin(0.5, 0));
+      }
+    }
+
+    c.add(this.add.text(W / 2, H - 10, 'G / ESC 关闭', {
+      fontSize: '11px', fontFamily: 'Consolas', color: '#445566',
+    }).setOrigin(0.5, 1));
+
+    this.input.keyboard!.once('keydown-ESC', () => this.closeOverlay());
+    this.input.keyboard!.once('keydown-G',   () => this.closeOverlay());
+  }
+
+  /** 渲染一行词条 */
+  private renderStatLine(
+    c: Phaser.GameObjects.Container,
+    x: number, y: number,
+    stat: StatRoll, isMain: boolean,
+  ): void {
+    const d = STAT_DEFS[stat.type];
+    const col = isMain ? '#ddeeff' : '#8899bb';
+    const fs = isMain ? '12px' : '11px';
+    c.add(this.add.text(x, y, `${d.icon} ${d.name} +${stat.value}${d.unit}`, {
+      fontSize: fs, fontFamily: '"Microsoft YaHei", Consolas', color: col,
+    }));
+  }
+
+  /** 装备背包中第 idx 件到对应槽位 */
+  private equipItem(idx: number): void {
+    const eq = this.equipInventory[idx];
+    if (!eq) return;
+    const prev = this.equipped[eq.slot];
+    this.equipped[eq.slot] = eq;
+    this.equipInventory.splice(idx, 1);
+    if (prev) this.equipInventory.push(prev);
+    this.recalcEquipStats();
+    this.updateHUD();
+  }
+
+  /* ================================================================
    * SAVE
    * ================================================================ */
 
@@ -1556,6 +1872,8 @@ export class GameScene extends Phaser.Scene {
       playerDamageBonus: this.playerDamageBonus,
       playerMaxHpBonus:  this.playerMaxHpBonus,
       scoutRadiusReduction: this.scoutRadiusReduction,
+      equipped: this.equipped,
+      equipInventory: this.equipInventory,
       timestamp: Date.now(),
     });
   }
