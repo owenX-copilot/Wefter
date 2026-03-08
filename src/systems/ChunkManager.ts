@@ -94,7 +94,9 @@ export class ChunkManager {
           seed: 0,
         });
       }
-      return this.chunks.get(k)!;
+      const chunk = this.chunks.get(k)!;
+      this.applyDailyRegen(k, chunk);
+      return chunk;
     }
 
     // 未锚定：用当前 seed 生成
@@ -205,6 +207,48 @@ export class ChunkManager {
     return t === TileType.Floor || t === TileType.Exit;
   }
 
+  // ---- 每日资源刷新 ----
+
+  private dateStr(): string {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+
+  private dailySeed(cx: number, cy: number, dateStr: string): number {
+    const dn = parseInt(dateStr.replace(/-/g, ''), 10);
+    return ((Math.imul(cx, 0x9e3779b9) ^ Math.imul(cy, 0x6c62272e) ^ dn) >>> 0) || 1;
+  }
+
+  private applyDailyRegen(k: string, chunk: ChunkData): void {
+    if (chunk.chunkType !== ChunkType.Wild) return;
+    const ad = this.anchoredData[k];
+    if (!ad) return;
+    const today = this.dateStr();
+
+    if (ad.lastRegenDate !== today) {
+      // 新的一天：重新生成碎片
+      const seed = this.dailySeed(chunk.cx, chunk.cy, today);
+      chunk.fragments = MazeGenerator.placeFragments(chunk.grid, seed, chunk.cx, chunk.cy);
+      chunk.chestUnlocked = false;
+      chunk.chestOpened = false;
+      ad.lastRegenDate = today;
+      ad.dailyChestOpened = false;
+      SaveManager.saveAnchored(this.anchoredData);
+    } else if (chunk.fragments.length === 0) {
+      // 同一天但缓存为空（新会话）：恢复今日状态
+      if (ad.dailyChestOpened) {
+        chunk.chestOpened = true;
+        chunk.chestUnlocked = true;
+      } else {
+        const seed = this.dailySeed(chunk.cx, chunk.cy, today);
+        chunk.fragments = MazeGenerator.placeFragments(chunk.grid, seed, chunk.cx, chunk.cy);
+        chunk.chestUnlocked = false;
+        chunk.chestOpened = false;
+      }
+    }
+    // 否则：缓存中有存活碎片，保持原状（玩家正在收集中）
+  }
+
   /** 用 seed 派生 SHOP_OFFER_COUNT 件不重复商品 */
   rollShopOffers(seed: number): (typeof ITEM_POOL[number])[] {
     const pool = [...ITEM_POOL];
@@ -216,6 +260,15 @@ export class ChunkManager {
       offers.push(pool.splice(idx, 1)[0]);
     }
     return offers;
+  }
+
+  /** 锚定荒野区块：标记今日宝箱已领取 */
+  markDailyChestOpened(cx: number, cy: number): void {
+    const k = this.key(cx, cy);
+    if (this.anchoredData[k]) {
+      this.anchoredData[k].dailyChestOpened = true;
+      SaveManager.saveAnchored(this.anchoredData);
+    }
   }
 
   /** 持久化锚定商店的冷却状态（防刷新绕过） */

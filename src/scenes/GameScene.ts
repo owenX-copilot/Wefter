@@ -331,7 +331,16 @@ export class GameScene extends Phaser.Scene {
     this.renderChest(this.currentChunk);
     this.renderEnemies(this.currentChunk);
     this.tryHomeHeal();
+    this.tryAnchoredWildNotice();
     this.updateHUD();
+  }
+
+  private tryAnchoredWildNotice(): void {
+    const chunk = this.currentChunk;
+    if (!chunk || chunk.chunkType !== ChunkType.Wild || chunk.state !== 'anchored') return;
+    if (chunk.chestOpened) return;
+    const hasFragments = chunk.fragments.some(f => !f.collected);
+    if (hasFragments) this.showMessage('🌿 领土资源已刷新，收集碎片可领取附加奖励', 2500);
   }
 
   private tryHomeHeal(): void {
@@ -420,7 +429,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   private renderFragments(chunk: ChunkData): void {
-    if (chunk.state === 'anchored') return;
+    // 锚定荒野区块允许每日刷新碎片；其余锚定区块跳过
+    if (chunk.state === 'anchored' && chunk.chunkType !== ChunkType.Wild) return;
     for (const frag of chunk.fragments) {
       if (frag.collected) continue;
       const px = frag.x * TILE_SIZE + TILE_SIZE / 2;
@@ -447,7 +457,7 @@ export class GameScene extends Phaser.Scene {
       this.chestSprite = null;
     }
     if (chunk.state === 'anchored') {
-      // 锚定商店：显示商人 NPC
+      // 锚定商店：商人 NPC
       if (chunk.chunkType === ChunkType.Shop) {
         const px = MID * TILE_SIZE + TILE_SIZE / 2;
         const py = MID * TILE_SIZE + TILE_SIZE / 2;
@@ -458,8 +468,11 @@ export class GameScene extends Phaser.Scene {
           duration: 800, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
         });
         this.fragmentLayer.add(this.chestSprite);
+        return;
       }
-      return;
+      // 锚定荒野：根据宝箱状态渲染（同未锚定逻辑）
+      if (chunk.chunkType !== ChunkType.Wild) return;
+      // fall through to chest rendering below
     }
     if (this.chunkManager.isHome(chunk.cx, chunk.cy)) return;
 
@@ -520,7 +533,9 @@ export class GameScene extends Phaser.Scene {
 
   private checkFragmentPickup(): void {
     const chunk = this.currentChunk;
-    if (!chunk || chunk.state === 'anchored') return;
+    if (!chunk) return;
+    // 正常未锚定或锚定荒野均允许收碎片
+    if (chunk.state === 'anchored' && chunk.chunkType !== ChunkType.Wild) return;
     if (chunk.chunkType !== ChunkType.Wild) return;
 
     for (const frag of chunk.fragments) {
@@ -576,34 +591,43 @@ export class GameScene extends Phaser.Scene {
 
   private checkChestInteraction(): void {
     const chunk = this.currentChunk;
-    if (!chunk || chunk.state === 'anchored') return;
+    if (!chunk) return;
     if (this.chunkManager.isHome(chunk.cx, chunk.cy)) return;
     if (chunk.chunkType !== ChunkType.Wild) return;
     if (!chunk.chestUnlocked || chunk.chestOpened) return;
     if (this.playerTileX !== MID || this.playerTileY !== MID) return;
 
-    // 打开宝箱
     chunk.chestOpened = true;
     this.gainCoins(COIN_WILD_CHEST);
     this.tryChestEquipDrop(chunk.cx, chunk.cy, 'wild_chest');
-    this.chunkManager.liberateChunk(chunk.cx, chunk.cy);
 
-    // 保存当前地图快照为钥匙（快照只含迷宫结构，不含任何关卡内容）
-    const gridSnapshot = chunk.grid.map(row => [...row]);
-    const label = `从 (${chunk.cx}, ${chunk.cy}) 获得`;
-    this.playerKeys.push({ grid: gridSnapshot, label });
-
-    // 视觉反馈
-    if (this.chestSprite) {
-      this.tweens.killTweensOf(this.chestSprite);
-      this.chestSprite.setTexture('chest_opened');
-      this.chestSprite.setScale(1);
+    if (chunk.state === 'anchored') {
+      // 锚定荒野：当日资源采集，不产生钥匙也不重新解放
+      this.chunkManager.markDailyChestOpened(chunk.cx, chunk.cy);
+      if (this.chestSprite) {
+        this.tweens.killTweensOf(this.chestSprite);
+        this.chestSprite.setTexture('chest_opened');
+        this.chestSprite.setScale(1);
+      }
+      this.cameras.main.flash(400, 50, 180, 50);
+      this.showMessage(`🏡 领土资源已领取！\n+${COIN_WILD_CHEST}🪙  明天可再次刷新`, 2500);
+    } else {
+      // 普通荒野：解放区块，获得钥匙
+      this.chunkManager.liberateChunk(chunk.cx, chunk.cy);
+      const gridSnapshot = chunk.grid.map(row => [...row]);
+      const label = `从 (${chunk.cx}, ${chunk.cy}) 获得`;
+      this.playerKeys.push({ grid: gridSnapshot, label });
+      if (this.chestSprite) {
+        this.tweens.killTweensOf(this.chestSprite);
+        this.chestSprite.setTexture('chest_opened');
+        this.chestSprite.setScale(1);
+      }
+      this.cameras.main.flash(500, 100, 200, 100);
+      this.showMessage(
+        `🔑 获得地图钥匙「从 (${chunk.cx}, ${chunk.cy}) 获得」\n在任意未锚定区块按 E 即可使用`,
+        4000,
+      );
     }
-    this.cameras.main.flash(500, 100, 200, 100);
-    this.showMessage(
-      `🔑 获得地图钥匙「从 (${chunk.cx}, ${chunk.cy}) 获得」\n在任意未锚定区块按 E 即可使用`,
-      4000,
-    );
     this.updateHUD();
   }
 
