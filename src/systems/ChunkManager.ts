@@ -220,24 +220,18 @@ export class ChunkManager {
   }
 
   private applyDailyRegen(k: string, chunk: ChunkData): void {
-    if (chunk.chunkType !== ChunkType.Wild) {
-      console.log(`[regen] skip ${k}: chunkType=${chunk.chunkType} (not Wild)`);
-      return;
-    }
+    if (chunk.chunkType !== ChunkType.Wild) return;
     const ad = this.anchoredData[k];
-    if (!ad) {
-      console.log(`[regen] skip ${k}: no anchoredData`);
-      return;
-    }
+    if (!ad) return;
     const today = this.dateStr();
 
+    // 版本不匹配（包含旧存档、a0e8b32 过渡数据）→ 无条件重新生成
     const isNewVersion = ad.regenVersion === DAILY_REGEN_VERSION;
-    console.log(`[regen] ${k}: isNewVersion=${isNewVersion} regenVersion=${ad.regenVersion} lastRegenDate=${ad.lastRegenDate} today=${today} dailyChestOpened=${ad.dailyChestOpened} fragments.length=${chunk.fragments.length}`);
 
     if (!isNewVersion || ad.lastRegenDate !== today) {
+      // 新的一天 或 版本升级：重新生成 DAILY_FRAGMENT_COUNT 个碎片
       const seed = this.dailySeed(chunk.cx, chunk.cy, today);
       chunk.fragments = MazeGenerator.placeFragments(chunk.grid, seed, chunk.cx, chunk.cy, DAILY_FRAGMENT_COUNT);
-      console.log(`[regen] ${k}: regen → ${chunk.fragments.length} fragments (grid floor tiles OK)`);
       chunk.chestUnlocked = false;
       chunk.chestOpened = false;
       ad.lastRegenDate = today;
@@ -245,19 +239,18 @@ export class ChunkManager {
       ad.regenVersion = DAILY_REGEN_VERSION;
       SaveManager.saveAnchored(this.anchoredData);
     } else if (chunk.fragments.length === 0) {
+      // 同一天、同版本、缓存为空（刷新页面）：恢复今日状态
       if (ad.dailyChestOpened) {
-        console.log(`[regen] ${k}: same day, cache miss, already collected today`);
+        // 今日已全部领取，fragments 保持空
         chunk.chestOpened = true;
       } else {
         const seed = this.dailySeed(chunk.cx, chunk.cy, today);
         chunk.fragments = MazeGenerator.placeFragments(chunk.grid, seed, chunk.cx, chunk.cy, DAILY_FRAGMENT_COUNT);
-        console.log(`[regen] ${k}: same day cache restore → ${chunk.fragments.length} fragments`);
         chunk.chestUnlocked = false;
         chunk.chestOpened = false;
       }
-    } else {
-      console.log(`[regen] ${k}: cache still live, ${chunk.fragments.length} fragments remain`);
     }
+    // 否则：缓存中有存活碎片，保持原状（玩家正在收集中）
   }
 
   /** 用 seed 派生 SHOP_OFFER_COUNT 件不重复商品 */

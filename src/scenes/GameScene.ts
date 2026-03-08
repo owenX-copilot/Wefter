@@ -435,7 +435,6 @@ export class GameScene extends Phaser.Scene {
   private renderFragments(chunk: ChunkData): void {
     // 锚定荒野区块允许每日刷新碎片；其余锚定区块跳过
     if (chunk.state === 'anchored' && chunk.chunkType !== ChunkType.Wild) return;
-    console.log(`[render] renderFragments state=${chunk.state} type=${chunk.chunkType} frags=${chunk.fragments.length}`);
     for (const frag of chunk.fragments) {
       if (frag.collected) continue;
       const px = frag.x * TILE_SIZE + TILE_SIZE / 2;
