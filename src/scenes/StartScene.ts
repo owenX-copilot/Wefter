@@ -47,7 +47,7 @@ export class StartScene extends Phaser.Scene {
     });
 
     // 版本号
-    this.add.text(VIEWPORT_W - 8, VIEWPORT_H - 8, 'v0.1', {
+    this.add.text(VIEWPORT_W - 8, VIEWPORT_H - 8, 'v1.0.0', {
       fontSize: '11px', fontFamily: 'Consolas', color: '#334455',
     }).setOrigin(1, 1);
   }
