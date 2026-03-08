@@ -17,6 +17,7 @@ import { SeedProvider } from '../systems/SeedProvider';
 import { ChunkManager } from '../systems/ChunkManager';
 import { SaveManager } from '../systems/SaveManager';
 import { EquipmentGenerator } from '../systems/EquipmentGenerator';
+import { aStar } from '../utils/AStar';
 
 /**
  * 主游戏场景
@@ -67,6 +68,7 @@ export class GameScene extends Phaser.Scene {
   private moveTarget = { x: 0, y: 0 };
   private moveDir = { x: 0, y: 0 };   // keydown/keyup 维护的当前方向
   private moveCooldown = 0;            // 步进冷却时长（ms）
+  private pathQueue: { x: number; y: number }[] = []; // A* 自动寻路队列
   private hudTickAccum = 0;            // 商店倒计时 HUD 刷新累计（ms）
   private static readonly MOVE_STEP_MS = 60; // 连续移动间隔，与动画时长匹配
 
@@ -178,7 +180,7 @@ export class GameScene extends Phaser.Scene {
     this.keyTab = kb.addKey(Phaser.Input.Keyboard.KeyCodes.TAB);
 
     // keydown/keyup 维护方向状态，完全绕开系统 key-repeat
-    const setDir = (x: number, y: number) => { this.moveDir.x = x; this.moveDir.y = y; this.moveCooldown = 0; };
+    const setDir = (x: number, y: number) => { this.moveDir.x = x; this.moveDir.y = y; this.moveCooldown = 0; this.pathQueue = []; };
     const clrDir = (x: number, y: number) => {
       if (this.moveDir.x === x && this.moveDir.y === y) { this.moveDir.x = 0; this.moveDir.y = 0; }
     };
@@ -192,8 +194,25 @@ export class GameScene extends Phaser.Scene {
     kb.on('keydown-RIGHT', () => setDir( 1, 0));  kb.on('keyup-RIGHT', () => clrDir( 1, 0));
 
     // 切出场景时清除方向状态，防止回来后嫌idental挥不停
-    this.events.on('pause',  () => { this.moveDir.x = 0; this.moveDir.y = 0; });
-    this.events.on('resume', () => { this.moveDir.x = 0; this.moveDir.y = 0; this.moveCooldown = 0; });
+    this.events.on('pause',  () => { this.moveDir.x = 0; this.moveDir.y = 0; this.pathQueue = []; });
+    this.events.on('resume', () => { this.moveDir.x = 0; this.moveDir.y = 0; this.moveCooldown = 0; this.pathQueue = []; });
+
+    // ---- 触屏 / 鼠标 点击寻路 ----
+    this.input.on('pointerdown', (ptr: Phaser.Input.Pointer) => {
+      if (!this.currentChunk) return;
+      // 将屏幕坐标转换为网格坐标
+      const gx = Math.floor(ptr.x / TILE_SIZE);
+      const gy = Math.floor(ptr.y / TILE_SIZE);
+      if (gx < 0 || gx >= CHUNK_TILES || gy < 0 || gy >= CHUNK_TILES) return;
+      // 清除键盘方向，计算 A* 路径
+      this.moveDir.x = 0;
+      this.moveDir.y = 0;
+      this.pathQueue = aStar(
+        this.currentChunk.grid,
+        this.playerTileX, this.playerTileY,
+        gx, gy,
+      );
+    });
 
     // ---- HUD ----
     this.createHUD();
@@ -223,7 +242,7 @@ export class GameScene extends Phaser.Scene {
     });
 
     // ---- 欢迎提示 ----
-    this.showMessage('WASD 移动 | 收集5碎片→开宝箱得钥匙 | E 使用钥匙锚定区块 | M 地图', 4000);
+    this.showMessage('WASD/点击格子移动 | 收集碎片→宝箱得钥匙 | E 锚定区块 | M 地图', 4000);
   }
 
   update(_time: number, delta: number): void {
@@ -281,29 +300,39 @@ export class GameScene extends Phaser.Scene {
       this.moveCooldown -= delta;
     }
 
-    const { x: mx, y: my } = this.moveDir;
-    if (mx === 0 && my === 0) {
-      if (Phaser.Input.Keyboard.JustDown(this.keyE))   this.tryAnchor();
-      if (Phaser.Input.Keyboard.JustDown(this.keyF))   this.tryOpenShop();
-      if (Phaser.Input.Keyboard.JustDown(this.keyB))   this.openBagUI();
-      if (Phaser.Input.Keyboard.JustDown(this.keyM))   this.openMap();
-      if (Phaser.Input.Keyboard.JustDown(this.keyG))   this.openEquipUI();
-      if (Phaser.Input.Keyboard.JustDown(this.keyTab)) this.showStatus();
-      return;
+    // 确定本帧移动方向：键盘方向 > A* 队列
+    let dx = this.moveDir.x;
+    let dy = this.moveDir.y;
+
+    if (dx === 0 && dy === 0) {
+      if (this.pathQueue.length > 0 && this.moveCooldown <= 0) {
+        const step = this.pathQueue.shift()!;
+        dx = step.x;
+        dy = step.y;
+      } else {
+        if (Phaser.Input.Keyboard.JustDown(this.keyE))   this.tryAnchor();
+        if (Phaser.Input.Keyboard.JustDown(this.keyF))   this.tryOpenShop();
+        if (Phaser.Input.Keyboard.JustDown(this.keyB))   this.openBagUI();
+        if (Phaser.Input.Keyboard.JustDown(this.keyM))   this.openMap();
+        if (Phaser.Input.Keyboard.JustDown(this.keyG))   this.openEquipUI();
+        if (Phaser.Input.Keyboard.JustDown(this.keyTab)) this.showStatus();
+        return;
+      }
     }
 
     if (this.moveCooldown > 0) return;
 
-    const nx = this.playerTileX + mx;
-    const ny = this.playerTileY + my;
+    const nx = this.playerTileX + dx;
+    const ny = this.playerTileY + dy;
     if (nx < 0 || nx >= CHUNK_TILES || ny < 0 || ny >= CHUNK_TILES) return;
 
     const tile = this.currentChunk!.grid[ny][nx];
     if (tile === TileType.Wall) return;
 
-    // 目标格有存活敌人 → 近战攻击（不位移）
+    // 目标格有存活敌人 → 近战攻击（不位移），中断寻路
     const enemyHere = this.getEnemyAt(nx, ny);
     if (enemyHere) {
+      this.pathQueue = [];
       this.moveCooldown = this.calcMoveCooldown();
       this.dealDamageToEnemy(enemyHere, this.calcPlayerDamage());
       this.showFloatingText('⚔', nx * TILE_SIZE + TILE_SIZE / 2, (ny - 1) * TILE_SIZE);
@@ -321,6 +350,7 @@ export class GameScene extends Phaser.Scene {
    * ================================================================ */
 
   private loadChunk(cx: number, cy: number): void {
+    this.pathQueue = [];          // 切区块时清除残留寻路队列
     this.playerChunkX = cx;
     this.playerChunkY = cy;
     this.currentChunk = this.chunkManager.getChunk(cx, cy);
