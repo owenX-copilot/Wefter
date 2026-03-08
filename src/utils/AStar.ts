@@ -11,6 +11,7 @@ export function aStar(
   grid: number[][],
   sx: number, sy: number,
   tx: number, ty: number,
+  visitedOnly?: Set<string>,
 ): Vec2[] {
   if (sx === tx && sy === ty) return [];
 
@@ -19,7 +20,10 @@ export function aStar(
 
   const isWalkable = (x: number, y: number) => {
     if (x < 0 || x >= cols || y < 0 || y >= rows) return false;
-    return grid[y][x] !== TileType.Wall;
+    if (grid[y][x] === TileType.Wall) return false;
+    // 若限制仅走已探索路径，出口格例外（始终可通行）
+    if (visitedOnly && grid[y][x] !== TileType.Exit && !visitedOnly.has(`${x},${y}`)) return false;
+    return true;
   };
 
   if (!isWalkable(tx, ty)) return [];

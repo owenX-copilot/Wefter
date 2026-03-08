@@ -69,6 +69,8 @@ export class GameScene extends Phaser.Scene {
   private moveDir = { x: 0, y: 0 };   // keydown/keyup 维护的当前方向
   private moveCooldown = 0;            // 步进冷却时长（ms）
   private pathQueue: { x: number; y: number }[] = []; // A* 自动寻路队列
+  private chunkVisited = new Map<string, Set<string>>(); // 已探索格：区块键 → Set<"x,y">
+  private tileSprites: (Phaser.GameObjects.Sprite | null)[][] = [];       // 未锚定地板精灵引用（探索更新用）
   private hudTickAccum = 0;            // 商店倒计时 HUD 刷新累计（ms）
   private static readonly MOVE_STEP_MS = 60; // 连续移动间隔，与动画时长匹配
 
@@ -205,21 +207,32 @@ export class GameScene extends Phaser.Scene {
     // ---- 触屏 / 鼠标 点击寻路 ----
     this.input.on('pointerdown', (ptr: Phaser.Input.Pointer) => {
       if (!this.currentChunk) return;
-      // 将屏幕坐标转换为网格坐标（需减去 gameLayer 的偏移量）
       const gx = Math.floor((ptr.worldX - OFFSET_X) / TILE_SIZE);
       const gy = Math.floor((ptr.worldY - OFFSET_Y) / TILE_SIZE);
       if (gx < 0 || gx >= CHUNK_TILES || gy < 0 || gy >= CHUNK_TILES) return;
-      // 清除键盘方向，计算 A* 路径
       // 若动画进行中，以目标格为起点，避免多走一步
       const startX = this.isMoving ? this.moveTarget.x : this.playerTileX;
       const startY = this.isMoving ? this.moveTarget.y : this.playerTileY;
       this.moveDir.x = 0;
       this.moveDir.y = 0;
-      this.pathQueue = aStar(
-        this.currentChunk.grid,
-        startX, startY,
-        gx, gy,
-      );
+      const chunk = this.currentChunk;
+      if (chunk.state === 'anchored') {
+        // 锚定 / 家园：无限制 A*
+        this.pathQueue = aStar(chunk.grid, startX, startY, gx, gy);
+      } else {
+        const dist = Math.abs(gx - startX) + Math.abs(gy - startY);
+        if (dist <= 2) {
+          // 近距离（≤2格）：正常 A*，用于探索行走
+          this.pathQueue = aStar(chunk.grid, startX, startY, gx, gy);
+        } else {
+          // 远距离：仅可沿已探索路径寻路
+          const visited = this.chunkVisited.get(`${chunk.cx},${chunk.cy}`) ?? new Set<string>();
+          this.pathQueue = aStar(chunk.grid, startX, startY, gx, gy, visited);
+          if (this.pathQueue.length === 0) {
+            this.showMessage('🧭 请先探索此区域', 1500);
+          }
+        }
+      }
     });
 
     // ---- HUD ----
@@ -288,6 +301,7 @@ export class GameScene extends Phaser.Scene {
         this.playerTileX = this.moveTarget.x;
         this.playerTileY = this.moveTarget.y;
         this.isMoving = false;
+        this.markTileVisited(this.playerTileX, this.playerTileY);
         this.checkFragmentPickup();
         this.checkChestInteraction();
         this.checkEnemyChestInteraction();
@@ -371,6 +385,20 @@ export class GameScene extends Phaser.Scene {
     this.tryHomeHeal();
     this.tryAnchoredWildNotice();
     this.updateHUD();
+    this.markTileVisited(this.playerTileX, this.playerTileY); // 标记入口格为已探索
+  }
+
+  private markTileVisited(x: number, y: number): void {
+    const chunk = this.currentChunk;
+    if (!chunk || chunk.state === 'anchored') return; // 锚定区域无需追踪
+    const ck = `${chunk.cx},${chunk.cy}`;
+    if (!this.chunkVisited.has(ck)) this.chunkVisited.set(ck, new Set());
+    const k = `${x},${y}`;
+    const set = this.chunkVisited.get(ck)!;
+    if (set.has(k)) return;
+    set.add(k);
+    const sp = this.tileSprites[y]?.[x];
+    if (sp) sp.setTexture('visitedFloor');
   }
 
   private tryAnchoredWildNotice(): void {
@@ -426,6 +454,11 @@ export class GameScene extends Phaser.Scene {
   private renderChunk(chunk: ChunkData): void {
     const isHome = this.chunkManager.isHome(chunk.cx, chunk.cy);
     const isAnchored = chunk.state === 'anchored';
+    const ck = `${chunk.cx},${chunk.cy}`;
+
+    // 初始化地板精灵引用表（仅未锚定区块需要动态更新）
+    this.tileSprites = Array.from({ length: CHUNK_TILES }, () =>
+      new Array<Phaser.GameObjects.Sprite | null>(CHUNK_TILES).fill(null));
 
     for (let y = 0; y < CHUNK_TILES; y++) {
       for (let x = 0; x < CHUNK_TILES; x++) {
@@ -434,7 +467,8 @@ export class GameScene extends Phaser.Scene {
         const py = y * TILE_SIZE;
 
         if (tile === TileType.Wall) {
-          const texKey = isAnchored ? 'anchoredWall' : 'wall';
+          // 未锚定使用亮色墙体，便于与地板区分
+          const texKey = isAnchored ? 'anchoredWall' : 'brightWall';
           this.mapLayer.add(this.add.sprite(px, py, texKey).setOrigin(0));
         } else if (tile === TileType.Exit) {
           this.mapLayer.add(this.add.sprite(px, py, 'exit').setOrigin(0));
@@ -444,7 +478,7 @@ export class GameScene extends Phaser.Scene {
             }).setOrigin(0.5),
           );
         } else {
-          // 地板——优先级：家园 > 已锚定商店 > 已锚定 > 中心房间(未锚定) > 普通
+          // 地板——优先级：家园 > 已锚定商店 > 已锚定 > 未锚定（检查探索状态）
           const inCenter = Math.abs(x - MID) <= 1 && Math.abs(y - MID) <= 1;
           const isAnchoredShop = isAnchored && chunk.chunkType === ChunkType.Shop;
           let key = 'floor';
@@ -454,8 +488,15 @@ export class GameScene extends Phaser.Scene {
             key = (onDiamond || onCross) ? 'pathFloor' : 'homeFloor';
           } else if (isAnchoredShop) key = 'shopFloor';
           else if (isAnchored) key = 'anchoredFloor';
-          else if (inCenter) key = 'centerFloor';
-          this.mapLayer.add(this.add.sprite(px, py, key).setOrigin(0));
+          else {
+            // 未锚定：已探索的格子显示亮色
+            const isVisited = this.chunkVisited.get(ck)?.has(`${x},${y}`) ?? false;
+            key = isVisited ? 'visitedFloor' : (inCenter ? 'centerFloor' : 'floor');
+          }
+          const sp = this.add.sprite(px, py, key).setOrigin(0);
+          this.mapLayer.add(sp);
+          // 仅未锚定区块保存精灵引用，供 markTileVisited 实时更新
+          if (!isAnchored) this.tileSprites[y][x] = sp;
         }
       }
     }
@@ -1476,6 +1517,16 @@ export class GameScene extends Phaser.Scene {
     this.pathQueue = [];
     this.moveDir.x = 0;
     this.moveDir.y = 0;
+
+    // 清除该象限内未锚定区块的探索记录（迷宫重生成，旧路径失效）
+    for (const [ck] of this.chunkVisited) {
+      const [cxs, cys] = ck.split(',');
+      const ccx = parseInt(cxs, 10), ccy = parseInt(cys, 10);
+      if (this.chunkManager.isAnchored(ccx, ccy)) continue;
+      if (this.seedProvider.getQuadrantForChunk(ccx, ccy) === quadrantId) {
+        this.chunkVisited.delete(ck);
+      }
+    }
 
     this.showMessage('⚡ 迷宫正在重构...', 2000);
     this.time.delayedCall(400, () => {

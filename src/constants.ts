@@ -78,7 +78,9 @@ export enum ChunkType {
 
 export const Colors = {
   WALL:          0x141428,
+  WALL_BRIGHT:   0x242444,  // 未锚定区块墙体（比普通墙体亮，便于与地板区分）
   FLOOR:         0x08080e,
+  FLOOR_VISITED: 0x161630,  // 已探索地板（稍亮于普通地板，标示探索过的路径）
   CENTER_FLOOR:  0x181838,
   PLAYER:        0x00ff88,
   FRAGMENT:      0x44ddff,

@@ -230,6 +230,22 @@ export class BootScene extends Phaser.Scene {
       g.strokeRect(1, 1, S - 2, S - 2);
     });
 
+    // 未锚定区块亮色墙体（便于与地板区分）
+    this.tex('brightWall', S, (g) => {
+      g.fillStyle(Colors.WALL_BRIGHT, 1);
+      g.fillRect(0, 0, S, S);
+      g.lineStyle(1, 0x4a4a7e, 0.4);
+      g.strokeRect(0, 0, S, S);
+    });
+
+    // 已探索地板（比普通地板稍亮，标示走过的路径）
+    this.tex('visitedFloor', S, (g) => {
+      g.fillStyle(Colors.FLOOR_VISITED, 1);
+      g.fillRect(0, 0, S, S);
+      g.lineStyle(1, 0x2a2a48, 0.5);
+      g.strokeRect(0, 0, S, S);
+    });
+
     // 商人 NPC — 橙色圆形+$符号
     this.tex('merchant', S, (g) => {
       g.fillStyle(0xcc8800, 1);
