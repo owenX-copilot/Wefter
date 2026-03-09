@@ -143,26 +143,27 @@ export class ChunkManager {
   /**
    * 锚定一个区块（用钥匙中的 grid 快照）
    */
-  anchorChunk(cx: number, cy: number, grid: number[][]): boolean {
+  anchorChunk(cx: number, cy: number, grid: number[][], chunkType?: string): boolean {
     const k = this.key(cx, cy);
-    const existingType = this.chunks.get(k)?.chunkType ?? ChunkType.Wild;
+    // 优先使用钒匙传入的类型；未传入则保留目标区块原有类型
+    const resolvedType = (chunkType ?? this.chunks.get(k)?.chunkType ?? ChunkType.Wild) as ChunkType;
     const existingSeed = this.chunks.get(k)?.seed ?? 0;
-    // 商店始终用模板 grid（不保存迷宫快照）；其他类型保存传入的快照
-    const isShop = existingType === ChunkType.Shop;
+    // 商店始终用模板 grid（不保存过膳到快照）；其他类型保存传入的快照
+    const isShop = resolvedType === ChunkType.Shop;
     const storedGrid = isShop ? MazeGenerator.generateShopFloor() : grid;
-    this.anchoredData[k] = { grid: storedGrid, type: existingType, anchoredAt: Date.now() };
+    this.anchoredData[k] = { grid: storedGrid, type: resolvedType, anchoredAt: Date.now() };
     SaveManager.saveAnchored(this.anchoredData);
 
     // 更新缓存
     this.chunks.set(k, {
       cx, cy, grid: storedGrid,
-      chunkType: existingType,
+      chunkType: resolvedType,
       fragments: [],
       enemies: [],
       chestUnlocked: true,
       chestOpened: true,
       shopPurchased: false,
-      shopOffers: existingType === ChunkType.Shop ? this.rollShopOffers(existingSeed) : [],
+      shopOffers: resolvedType === ChunkType.Shop ? this.rollShopOffers(existingSeed) : [],
       shopRefreshAt: 0,
       state: 'anchored',
       seed: 0,

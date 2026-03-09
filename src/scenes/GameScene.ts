@@ -711,7 +711,7 @@ export class GameScene extends Phaser.Scene {
 
     const gridSnapshot = chunk.grid.map(row => [...row]);
     const label = `从 (${chunk.cx}, ${chunk.cy}) 获得`;
-    this.playerKeys.push({ grid: gridSnapshot, label });
+    this.playerKeys.push({ grid: gridSnapshot, chunkType: chunk.chunkType, label });
     if (this.chestSprite) {
       this.tweens.killTweensOf(this.chestSprite);
       this.chestSprite.setTexture('chest_opened');
@@ -1089,7 +1089,7 @@ export class GameScene extends Phaser.Scene {
     this.chunkManager.liberateChunk(chunk.cx, chunk.cy);
     const gridSnapshot = chunk.grid.map(row => [...row]);
     const label = `从 (${chunk.cx}, ${chunk.cy}) 获得`;
-    this.playerKeys.push({ grid: gridSnapshot, label });
+    this.playerKeys.push({ grid: gridSnapshot, chunkType: chunk.chunkType, label });
 
     if (this.chestSprite) {
       this.tweens.killTweensOf(this.chestSprite);
@@ -1280,7 +1280,7 @@ export class GameScene extends Phaser.Scene {
       this.chunkManager.liberateChunk(chunk.cx, chunk.cy);
       const gridSnapshot = chunk.grid.map(row => [...row]);
       const label = `🏪 商店 (${chunk.cx}, ${chunk.cy})`;
-      this.playerKeys.push({ grid: gridSnapshot, label });
+      this.playerKeys.push({ grid: gridSnapshot, chunkType: chunk.chunkType, label });
       if (this.chestSprite) {
         this.tweens.killTweensOf(this.chestSprite);
         this.chestSprite.destroy();
@@ -1457,7 +1457,7 @@ export class GameScene extends Phaser.Scene {
       targetLabel: `(${cx}, ${cy})`,
       onAnchor: (index: number) => {
         const key = this.playerKeys[index];
-        this.chunkManager.anchorChunk(cx, cy, key.grid);
+        this.chunkManager.anchorChunk(cx, cy, key.grid, key.chunkType);
         this.playerKeys.splice(index, 1);
         this.updateHUD();
         this.loadChunk(cx, cy);

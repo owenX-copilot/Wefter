@@ -61,8 +61,8 @@ export interface ChunkData {
 
 export interface MapKey {
   /** 地图快照，可用于任意区块的锚定 */
-  grid: number[][];
-  /** 仅用于 UI 显示，例如「从 (2,-1) 获得」 */
+  grid: number[][];  /** 锚定后区块的类型（来源区块的类型）*/
+  chunkType: string;  /** 仅用于 UI 显示，例如「从 (2,-1) 获得」 */
   label: string;
 }
 
